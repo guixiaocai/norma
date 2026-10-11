@@ -1,11 +1,40 @@
-# NFSmon：NFS 服务端流量监控
+# norma：NFS 服务端 I/O 监控
+
+[English](README.md) | [简体中文](README.zh-CN.md) | [下载 Release](https://github.com/guixiaocai/norma/releases)
+
+**像 iftop 一样，在终端中查看每个客户端对 NFS 服务端的读写吞吐，支持 RDMA、TCP 和 UDP。**
 
 `nfstop` 与 `nfsdtop` 使用同一套类似 iftop 的终端界面。前者直接挂接 eBPF
 程序，后者调用 bpftrace；默认按计算节点显示 **NFS over RDMA** 的读写速度。
 
+仓库名取自 **NFS over RDMA**，对应默认传输方式；同一套工具也支持 TCP 与
+UDP NFS。发布的命令为 `nfstop` 和 `nfsdtop`。
+
+## 项目亮点
+
+- **按客户端定位共享存储 I/O。** 查看 NFSv3/v4 成功完成的读写数据量，包括
+  服务端缓存命中的读取；支持 RDMA、TCP、UDP，以及客户端 IP/CIDR、服务端
+  网卡本机地址筛选，还可按文件、UID、GID 或服务端地址分组。
+- **适配 EL8 内核补丁更新，复用二进制。** 有可用 BTF 时解析类型布局和已识别
+  的 NFSD 函数签名；缺少 BTF 时从匹配的 Rocky/Alma/RHEL 8 内核头文件生成
+  布局 JSON。兼容的 EL8 补丁更新后重新生成布局即可，无需重编译可执行文件。
+- **两种采集后端，同一套操作与统计。** 原生 eBPF 和 bpftrace 共用参数、界面
+  及指标定义；`nfstop` 内嵌 BPF 对象，`nfsdtop` 使用本机安装的 bpftrace。
+- **同时看当前、均值、峰值和累计量。** 提供 1 分钟与可配置窗口平均、窗口内
+  单次采样峰值及会话累计量；均值按实际时间加权并包含空闲时间，暂停显示时
+  仍持续采样。
+- **交互查看与脚本采集兼顾。** 自动缩放吞吐单位，可切换字节/比特显示，退出时
+  恢复终端；也可输出普通文本、JSON Lines，或限定采集时长。JSON 保留原始
+  字节与操作指标。
+
+主要面向 Linux x86_64 的 Rocky/Alma/RHEL 8 NFS 服务端，以及使用
+NFS over RDMA/InfiniBand 的共享存储和 HPC 环境。部署要求见
+[兼容范围](docs/compatibility.md)。
+
 ## 安装与运行
 
-Release 包含 `bin/nfstop`、`bin/nfsdtop`、安装工具、说明和许可证。
+`norma-vX.Y.Z-linux-amd64` Release 包含 `bin/nfstop`、`bin/nfsdtop`、安装工具、
+说明和许可证。
 
 ```bash
 sudo ./tools/install.sh
@@ -13,7 +42,7 @@ sudo nfstop
 sudo nfsdtop
 ```
 
-你当前的 Rocky 8 缺少可用模块 BTF 时，先从运行内核的头文件生成布局数据：
+Rocky/Alma/RHEL 8 缺少可用模块 BTF 时，先从运行内核的头文件生成布局数据：
 
 ```bash
 sudo dnf install -y gcc make "kernel-devel-$(uname -r)"
@@ -80,8 +109,8 @@ READ 是计算节点从服务端读取；WRITE 是计算节点写入服务端。
 重定向时输出普通文本；终端若不支持备用屏幕，建议使用 `-t`。
 
 统计的是 NFSD 服务端成功完成的逻辑读写字节，包含服务端缓存命中的读取。
-localhost 作为客户端访问 whale 的挂载不会直接混入统计。它不是物理磁盘 I/O、
-IB 端口线上流量，也不包含协议头和重传开销。
+本机作为客户端访问其他 NFS 服务端的 I/O 不属于这些服务端探针的统计范围。
+它不是物理磁盘 I/O、IB 端口线上流量，也不包含协议头和重传开销。
 
 ## 适配范围
 
@@ -111,5 +140,5 @@ make release VERSION=v0.2.0
 `nfstop` 是嵌入 eBPF 对象的静态 Go 可执行文件；`nfsdtop` 是静态界面和启动器，
 **仍需要目标机器安装 bpftrace >=0.16**。没有把 bpftrace 伪装成独立静态工具。
 
-本次按要求不执行测试、挂接探针或生成负载，只编译交付二进制。工作流也只
-构建与发布；兼容范围是实现范围，不能写成跨版本测试通过记录。
+v0.2.0 尚未进行探针挂接、NFS 工作负载或跨内核运行验证。工作流执行构建与
+发布；编译成功不代表所有目标内核已经通过运行验证。

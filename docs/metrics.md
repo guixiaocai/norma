@@ -58,5 +58,5 @@ media durability. Re-executed successful operations can be counted more than
 once according to the server's actual work.
 
 The frontend's sampling/terminal cleanup adds no probes on the machine's own
-outgoing NFS client path. It therefore keeps access to an upstream whale mount
+outgoing NFS client path. It therefore keeps access to another NFS server
 outside this machine's NFSD per-client list.

@@ -20,5 +20,5 @@ jobs:
         run: ./tools/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: nfsmon-linux-amd64
+          name: norma-linux-amd64
           path: bin/

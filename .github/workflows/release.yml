@@ -35,7 +35,7 @@ jobs:
           ./tools/package.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: nfsmon-release-linux-amd64
+          name: norma-release-linux-amd64
           path: dist/
       - name: Publish tagged GitHub release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
@@ -44,4 +44,4 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           gh release create "$RELEASE_TAG" dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
-            --verify-tag --title "NFSmon $RELEASE_TAG" --notes-file docs/release-notes.md
+            --verify-tag --title "norma $RELEASE_TAG" --notes-file docs/release-notes.md

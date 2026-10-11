@@ -1,11 +1,46 @@
-# NFSmon
+# norma
 
-NFS server I/O by client, with an iftop-style terminal interface.
+[English](README.md) | [简体中文](README.zh-CN.md) | [Releases](https://github.com/guixiaocai/norma/releases)
+
+**NFS server I/O monitor for RDMA, TCP and UDP, with an iftop-style terminal interface.**
+
+Find which client is reading or writing, compare bursts with rolling averages,
+and keep an eye on shared-storage workloads directly from your terminal.
 
 Two collectors share the same command line and display: **nfstop** attaches
 native eBPF probes; **nfsdtop** supervises a bpftrace collector. Both count
 successful NFSD VFS read/write completion bytes for NFSv3/v4. The default
 transport is **NFS over RDMA**. TCP and UDP NFS are selectable.
+
+The name comes from **NFS over RDMA**, the default transport. The same tools
+also monitor TCP and UDP NFS. Release commands are `nfstop` and `nfsdtop`.
+
+## Why use it?
+
+- **Per-client visibility across RDMA and TCP.** Attribute successful NFS
+  reads and writes to clients, including reads served from the server's cache.
+  Use client IP/CIDR and server-interface address filters to focus on a workload;
+  switch to file, UID, GID or server views when you need another angle.
+- **EL8 kernel adaptation without rebuilding the executables.** Resolve layouts
+  and recognized NFSD signatures from runtime BTF, or prepare layout data from
+  matching Rocky/Alma/RHEL 8 kernel headers. For compatible EL8 patch updates,
+  regenerate the layout JSON and keep the same binaries.
+- **Two collectors, one workflow.** Choose the embedded native eBPF backend or
+  the bpftrace backend with the same flags, interface and metric definitions.
+  `nfstop` needs no installed bpftrace; `nfsdtop` uses your installed bpftrace.
+- **Rolling statistics with explicit timing.** See the current rate, 1-minute
+  and configurable-window averages, the highest sample in the window, and
+  session totals. Averages weight elapsed time and include idle intervals;
+  pausing the display keeps collection running.
+- **A terminal tool that also fits scripts.** Interactive byte/bit units and
+  terminal restoration on exit sit alongside plain text, JSON Lines and timed
+  collection. JSON retains raw byte and operation metrics for downstream tools.
+
+The primary target is Linux x86_64 NFS servers on Rocky/Alma/RHEL 8, including
+shared-storage and HPC environments using NFS over RDMA/InfiniBand. See the
+[compatibility requirements](docs/compatibility.md) before deployment.
+
+## At a glance
 
 | Feature | Both tools |
 |---|---|
@@ -19,7 +54,7 @@ transport is **NFS over RDMA**. TCP and UDP NFS are selectable.
 
 ## Quick start
 
-Download and unpack a `nfsmon-vX.Y.Z-linux-amd64` release archive:
+Download and unpack a `norma-vX.Y.Z-linux-amd64` release archive:
 
 ```bash
 sudo ./tools/install.sh
@@ -128,5 +163,3 @@ for this revision. Build workflows also intentionally omit tests.
 New code: MIT. Native BPF: MIT OR GPL-2.0. bpftrace backend: BSD-2-Clause.
 Upstream notices and dependency licenses are retained in [NOTICE](NOTICE) and
 `licenses/`. This is a downstream project; see NOTICE for upstream links.
-
-[中文说明](README.zh-CN.md)

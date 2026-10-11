@@ -1,4 +1,4 @@
-NFSmon v0.2.0 provides nfstop and bpftrace-backed nfsdtop with a shared terminal UI.
+norma v0.2.0 provides nfstop and bpftrace-backed nfsdtop with a shared terminal UI.
 
 - Default NFS/RDMA monitoring; TCP/UDP/all transport selection and interface-local IP filtering.
 - Current rate, 1-minute/window averages, window peak and session totals.

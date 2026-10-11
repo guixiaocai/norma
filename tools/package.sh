@@ -4,7 +4,7 @@ set -euo pipefail
 base=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$base"
 nfsmon_version=${VERSION:-v0.2.0}
-nfsmon_name="nfsmon-${nfsmon_version}-linux-amd64"
+nfsmon_name="norma-${nfsmon_version}-linux-amd64"
 case "$nfsmon_version" in *[!a-zA-Z0-9._-]*) echo 'Invalid release version.' >&2; exit 1;; esac
 nfsmon_tmp=$(mktemp -d)
 trap 'rm -rf -- "$nfsmon_tmp"' EXIT
