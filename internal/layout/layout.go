@@ -70,11 +70,13 @@ func Resolve(path string) (Layout, error) {
 	if l, e := fromBTF(kernel); e == nil {
 		return l, nil
 	}
-	cached := filepath.Join("/var/cache/nfsmon", "layout-"+kernel+".json")
-	if l, e := read(cached, kernel); e == nil {
-		return l, nil
+	for _, dir := range []string{"/var/cache/norma", "/var/cache/nfsmon"} {
+		cached := filepath.Join(dir, "layout-"+kernel+".json")
+		if l, e := read(cached, kernel); e == nil {
+			return l, nil
+		}
 	}
-	return Layout{}, fmt.Errorf("no usable NFSD layout for %s; on EL8 install kernel-devel-$(uname -r), gcc and make, then run tools/prepare-layout.sh (see docs/compatibility.md)", kernel)
+	return Layout{}, fmt.Errorf("no usable NFSD layout for %s; provide a compatible layout with --layout or expose the required NFSD BTF metadata (see docs/compatibility.md)", kernel)
 }
 func read(path, kernel string) (Layout, error) {
 	var l Layout
@@ -296,7 +298,7 @@ func ExportObject(path, kernel string) ([]byte, error) {
 	if len(values) != 52 || f.Machine != elf.EM_X86_64 || f.ByteOrder != binary.LittleEndian {
 		return nil, fmt.Errorf("missing x86_64 offset data")
 	}
-	l := Layout{Schema: 1, Kernel: kernel, Arch: "amd64", Source: "matching kernel-devel offsetof data; EL8 VFS file profile"}
+	l := Layout{Schema: 1, Kernel: kernel, Arch: "amd64", Source: "matching kernel header offsets; direct-file NFSD profile"}
 	ptrs := []*uint32{&l.Offsets.RqAddr, &l.Offsets.RqDaddr, &l.Offsets.RqVers, &l.Offsets.RqProt, &l.Offsets.RqUID, &l.Offsets.RqGID, &l.Offsets.FileInode, &l.Offsets.FileDentry, &l.Offsets.InodeIno, &l.Offsets.InodeSB, &l.Offsets.SBDev, &l.Offsets.DentryParent, &l.Offsets.DentryName}
 	for i, p := range ptrs {
 		*p = binary.LittleEndian.Uint32(values[i*4:])

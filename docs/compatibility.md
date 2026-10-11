@@ -1,111 +1,127 @@
 # Compatibility contract
 
-Support is defined by architecture, NFSD probe semantics and available layout
-metadata, rather than equality to one kernel release string. This revision
-contains no cross-kernel runtime test results.
+Support depends on architecture, NFSD function semantics and accurate layout
+metadata. A distribution name or kernel version number alone does not establish
+compatibility. Build success does not establish runtime probe/workload support.
 
-| Platform or capability | Implementation scope | Layout source |
+## Shared requirements
+
+Both `norma` backends require:
+
+- Linux x86_64 with in-kernel NFSD already serving NFSv3 or NFSv4 exports.
+- BPF syscall, kprobes/return probes and compatible BPF helpers/maps, with
+  permission to load and attach them. Running as root is the practical default;
+  kernel security policy may still restrict tracing.
+- Recognized ordinary-read, splice-read and write function semantics, as below.
+- Accurate layouts for `svc_rqst`, `file`, `inode`, `super_block` and `dentry`,
+  obtained from usable runtime BTF or a reviewed matching JSON layout.
+
+Only Linux amd64 binaries are supplied. Other architectures require a register
+ABI adapter and corresponding backend argument mapping.
+
+| Deployment requirement | Native (default) | `--backend bpftrace` |
 |---|---|---|
-| Rocky/Alma/RHEL 8, x86_64, standard distribution 4.18 kernels | Primary target family; all patch releases with the listed NFSD signatures and fields | Matching kernel-devel header constants, or usable runtime BTF |
-| Other x86_64 kernels with complete BTF | Conditional adaptation when the resolver recognizes all required prototypes | `/sys/kernel/btf/nfsd`, `sunrpc`, `vmlinux` |
-| Mainline/distro 5.x and 6.x | Candidate families, not an unconditional guarantee; BTF prototype recognition is required | Runtime BTF or explicitly reviewed custom layout |
-| Custom/backported kernels | Supported when their function semantics match a profile and layout data is correct | Runtime BTF or `--layout file.json` |
-| CentOS/RHEL 7 3.10 | Outside the advertised release range | Use the earlier SystemTap approach |
-| arm64, other architectures | Not supplied by this release | Add a register ABI adapter and backend argument mapping |
+| `norma` executable | Required; includes embedded BPF object | Required; includes bpftrace frontend/script generator |
+| Runtime bpftrace | Not required | >= 0.16, with working dependencies and required probe/features support |
+| Runtime Go compiler, clang, libbpf shared library | Not required | No separate Go build required; bpftrace needs its own compilation/runtime environment |
+| NFSD profiles, layout and BPF permissions | Required | Same requirements |
 
-## Required capabilities
+The native collector uses kprobes and hash/per-CPU maps, without ring-buffer or
+fentry requirements. Selecting bpftrace does not bypass the shared layout or
+function-profile requirements. Backend failures are reported, with no automatic
+fallback. The [README comparison](../README.md#choose-a-backend) explains which
+backend to choose and their operational tradeoffs.
 
-- Linux in-kernel NFSD providing the monitored exports; NFSv3 or NFSv4.
-- BPF syscall, kprobes and return probes, compatible BPF helpers/maps, permission
-  to load and attach probes. The practical default is to run as root.
-- Readable layout metadata describing `svc_rqst`, `file`, `inode`, `super_block`
-  and `dentry`. The EL8 fallback requires gcc, make and **matching** kernel-devel.
-- `nfstop`: no runtime Go compiler, clang, libbpf library or module BTF dependency
-  after its executable and layout data are supplied.
-- `nfsdtop`: bpftrace >= 0.16 plus the same layout data. Kernel headers are not
-  included in the generated bpftrace program; layout generation is separate.
+## Layout selection
 
-The native collector no longer creates ring-buffer maps or fentry attachments,
-and therefore does not impose those upstream nfstop feature requirements.
-
-## Selection logic
-
-1. If `--layout file.json` is supplied, validate and use it.
-2. Try runtime BTF types and function prototypes. BTF may come from loaded
-   `nfsd`/`sunrpc` modules or vmlinux; missing module BTF is not a universal failure.
-3. Use `/var/cache/nfsmon/layout-<running-release>.json` if previously generated.
-4. Report missing capabilities and the layout preparation command.
-
-On EL8:
+1. If `--layout file.json` is supplied, validate and use that file.
+2. Otherwise, try runtime BTF types and function prototypes from loaded
+   `nfsd`/`sunrpc` modules and vmlinux. Missing module BTF is not always fatal if
+   another source contains the complete required metadata.
+3. Try a prepared `/var/cache/norma/layout-<running-release>.json`.
+4. Report missing layout support and guidance for a reviewed explicit layout.
 
 ```bash
-sudo dnf install -y gcc make "kernel-devel-$(uname -r)"
-sudo ./tools/prepare-layout.sh
+sudo norma --layout /path/to/layout.json
+sudo norma --backend bpftrace --layout /path/to/layout.json
 ```
 
-The helper compiles an unlinked object containing thirteen `offsetof` constants.
-It never builds/loads a module or touches NIC drivers. The executable extracts
-these constants directly from the ELF object; no helper executable is run to
-guess memory layouts. The resulting JSON is written atomically.
+Layout JSON is bound to the running kernel release and architecture to prevent
+using incompatible memory offsets. After a kernel change, provide newly resolved
+or regenerated data; the executable can remain the same when the function
+semantics still match a supported profile.
 
-Kernel release equality is checked **for layout data**, to prevent reading the
-wrong memory offsets. It does not restrict the executable to that release:
-generate a new JSON for a new EL8 kernel and keep using the same executable.
+## Supported function semantics
 
-## Function profiles
+All three probe slots must be resolved; incomplete read coverage is rejected.
 
-The EL8 header fallback uses these NFSD VFS success-return signatures:
+| Probe slot | Recognized functions |
+|---|---|
+| Ordinary read | `nfsd_readv`, or `nfsd_iter_read` with the same recognized status/count semantics |
+| Splice read | `nfsd_splice_read` |
+| Write | `nfsd_vfs_write` |
 
-| Probe slot | Function | Request arg | File arg | Completed-byte pointer arg | Count width |
-|---|---|---:|---:|---:|---:|
-| Ordinary read | `nfsd_readv` | 1 | 3 (`struct file *`) | 7 | 8 bytes |
-| Splice read | `nfsd_splice_read` | 1 | 3 (`struct file *`) | 5 | 8 bytes |
-| Write | `nfsd_vfs_write` | 1 | 3 (`struct file *`) | 7 | 8 bytes |
-
-For BTF-based adaptation the resolver discovers the request/file arguments by
-type and the `count`/`cnt` pointer argument by name and unsigned integer type.
-It accepts 4/8-byte completed counts, positions 1–8 and `struct nfsd_file *`
-wrappers exposing `nf_file`. Ordinary reads may use `nfsd_iter_read` instead
-of `nfsd_readv` **only when the same recognized status/count semantics apply**.
-All three slots must be resolved; missing read paths are not silently omitted.
+The BTF resolver recognizes unsigned 32-bit NFS-status returns, the request/file
+pointer arguments by type, and the `count`/`cnt` completed-count pointer by name
+and unsigned integer type. It accepts 4/8-byte counts, argument positions 1–8,
+and `struct nfsd_file *` wrappers exposing `nf_file`.
 
 Signed byte-return functions, scalar requested-count arguments, asynchronous
-completion paths, unfamiliar wrappers or different RPC transport markers need
-a new explicit profile/collector change. A function with the same name alone
-is not enough to claim support.
+completion, unfamiliar wrappers or different RPC transport markers require an
+explicit profile/collector change. Matching a symbol name alone is insufficient.
+A custom JSON file can describe offsets and argument placement for reviewed
+compatible semantics; it cannot make a different completion model compatible.
 
-## Extend without rebuilding the UI
+## Advanced header helper
 
-JSON has schema, kernel/architecture identity, field offsets and three hooks.
-The Go types in `internal/layout/layout.go` define the complete schema. Each
-hook supplies argument positions, count width and a wrapper offset, or
-`4294967295` for a direct `struct file *`. With a reviewed compatible signature,
-new offsets can be supplied using `--layout`; changing byte-return semantics
-requires code changes, not simply a different JSON.
+`tools/prepare-layout.sh` is a constrained fallback for its built-in direct-file
+function profile. It is **not a general layout generator for arbitrary kernel
+headers**. The helper checks its supported kernel family and matching headers;
+if rejected, use complete runtime BTF or a reviewed `--layout` profile.
+
+On a host covered by that helper, install gcc, make and development headers
+matching the running kernel, then run:
+
+```bash
+sudo ./tools/prepare-layout.sh
+# Installed location:
+sudo /usr/local/share/norma/tools/prepare-layout.sh
+```
+
+It compiles an unlinked object containing thirteen `offsetof` constants, without
+building/loading a kernel module or changing NIC drivers. `norma` reads the
+constants from the ELF object and the helper writes JSON atomically. This route
+supplies field offsets for a fixed profile; it does not discover new NFSD
+function semantics from headers.
+
+The JSON schema is defined in `internal/layout/layout.go`: kernel/architecture
+identity, field offsets and three hooks with argument positions, count width,
+and wrapper offset (`4294967295` denotes a direct `struct file *`). Review both
+kernel source semantics and offsets before supplying a custom layout.
 
 ## NICs and interface filtering
 
-CX3/`mlx4_ib`, CX4/`mlx5_ib`, later ConnectX cards and supported RDMA transports
-all reach the same NFSD handling layer. This project does not use per-NIC vendor
-counter APIs. A driver/firmware may affect whether NFS/RDMA works, but changing
-it is not part of monitoring installation.
+NFS/RDMA across supported NIC drivers reaches the same NFSD handling layer;
+collection does not use vendor NIC counters. Monitoring installation does not
+change exports, mount options, NFS configuration or NIC drivers.
 
-`-i` resolves that interface's current local IP addresses once at startup and
-filters the server destination address of the RPC request. It does not identify
-physical ingress with policy routing/bonding/shared addresses; restart after an
-address change. IPv6 link-local scope is not encoded in the grouping key, so
-use unique/global addresses when identical link-local addresses exist on
-multiple interfaces.
+`-i` resolves the interface's current local IP addresses once at startup and
+filters the server destination address of RPC requests. It does not identify
+physical ingress with policy routing, bonding or shared addresses. Restart after
+an address change. IPv4 and IPv6 parsing are included; IPv6 link-local scope is
+not encoded in the grouping key, so prefer unique/global addresses where
+identical link-local addresses exist on multiple interfaces.
 
-Counters use bounded maps. `nfstop` maintains independent client totals so a
-full per-file table does not invalidate client throughput. It reports map/read
-failures in the UI. `nfsdtop` uses bpftrace's key limits and diagnostics; inspect
-`kprobe_profile` for missed return probes under very high concurrency. No tool
-can reconstruct events the kernel did not deliver.
+## Collection limits
 
-Primary sources:
+Both backends use bounded maps and return probes. Native client/server totals
+have a map separate from detailed file/UID/GID data, with additional map/read
+health counters. bpftrace follows its configured per-map key limit and reports
+its own launch/runtime diagnostics. Neither can reconstruct undelivered events.
+See [architecture](architecture.md) for map limits, snapshot timing and diagnostics.
 
-- [EL8/Rocky kernel source and development packages](https://download.rockylinux.org/pub/rocky/8/BaseOS/x86_64/)
+Primary references:
+
 - [Linux NFSD VFS source](https://github.com/torvalds/linux/blob/master/fs/nfsd/vfs.c)
 - [Linux BTF documentation](https://docs.kernel.org/bpf/btf.html)
 - [Linux kprobe documentation](https://docs.kernel.org/trace/kprobes.html)

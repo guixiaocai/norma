@@ -4,141 +4,153 @@
 
 **像 iftop 一样，在终端中查看每个客户端对 NFS 服务端的读写吞吐，支持 RDMA、TCP 和 UDP。**
 
-`nfstop` 与 `nfsdtop` 使用同一套类似 iftop 的终端界面。前者直接挂接 eBPF
-程序，后者调用 bpftrace；默认按计算节点显示 **NFS over RDMA** 的读写速度。
+`norma` 用于定位共享存储的客户端 I/O、比较突发流量与滚动平均。名称取自
+**NFS over RDMA**，对应默认传输方式；也支持 TCP、UDP NFS。
 
-仓库名取自 **NFS over RDMA**，对应默认传输方式；同一套工具也支持 TCP 与
-UDP NFS。发布的命令为 `nfstop` 和 `nfsdtop`。
+现在只有一个可执行文件和一个命令：**`norma`**。默认使用内嵌的原生 eBPF
+后端，`--backend bpftrace` 显式选择 bpftrace 后端。两者共用参数、界面和
+指标定义，统计 NFSv3/v4 在 NFSD VFS 层成功完成的读写字节与操作次数。
 
 ## 项目亮点
 
-- **按客户端定位共享存储 I/O。** 查看 NFSv3/v4 成功完成的读写数据量，包括
-  服务端缓存命中的读取；支持 RDMA、TCP、UDP，以及客户端 IP/CIDR、服务端
-  网卡本机地址筛选，还可按文件、UID、GID 或服务端地址分组。
-- **适配 EL8 内核补丁更新，复用二进制。** 有可用 BTF 时解析类型布局和已识别
-  的 NFSD 函数签名；缺少 BTF 时从匹配的 Rocky/Alma/RHEL 8 内核头文件生成
-  布局 JSON。兼容的 EL8 补丁更新后重新生成布局即可，无需重编译可执行文件。
-- **两种采集后端，同一套操作与统计。** 原生 eBPF 和 bpftrace 共用参数、界面
-  及指标定义；`nfstop` 内嵌 BPF 对象，`nfsdtop` 使用本机安装的 bpftrace。
+- **按客户端定位共享存储 I/O。** 查看完成的读写数据量，包括服务端缓存命中
+  的读取；支持 RDMA、TCP、UDP，客户端 IP/CIDR、服务端网卡本机地址筛选，
+  以及客户端、服务端、文件、UID、GID 分组。
+- **一个命令，两种采集后端。** 原生后端无需在目标机器安装 bpftrace；已有
+  bpftrace 环境也可显式选择另一条采集路径。部署差异见下表。
+- **按内核能力适配。** 从运行时 BTF 解析字段偏移和已识别的 NFSD 函数签名，
+  或通过 `--layout` 提供经过审查的匹配布局，无需因布局数据变化重编译程序。
 - **同时看当前、均值、峰值和累计量。** 提供 1 分钟与可配置窗口平均、窗口内
-  单次采样峰值及会话累计量；均值按实际时间加权并包含空闲时间，暂停显示时
-  仍持续采样。
-- **交互查看与脚本采集兼顾。** 自动缩放吞吐单位，可切换字节/比特显示，退出时
-  恢复终端；也可输出普通文本、JSON Lines，或限定采集时长。JSON 保留原始
-  字节与操作指标。
-
-主要面向 Linux x86_64 的 Rocky/Alma/RHEL 8 NFS 服务端，以及使用
-NFS over RDMA/InfiniBand 的共享存储和 HPC 环境。部署要求见
-[兼容范围](docs/compatibility.md)。
+  单次采样峰值及会话累计量；均值包含空闲时间，暂停显示时仍持续采样。
+- **交互查看与脚本采集兼顾。** 自动缩放单位、字节/比特切换、退出时恢复
+  终端；支持普通文本、JSON Lines 和限定采集时长，JSON 保留字节与操作指标。
 
 ## 安装与运行
 
-`norma-vX.Y.Z-linux-amd64` Release 包含 `bin/nfstop`、`bin/nfsdtop`、安装工具、
-说明和许可证。
+在 **NFS 服务端** 下载并解压 `norma-vX.Y.Z-linux-amd64` Release。
+包内包含 `bin/norma`、安装工具、文档和许可证。
 
 ```bash
 sudo ./tools/install.sh
-sudo nfstop
-sudo nfsdtop
+sudo norma                         # 默认原生 eBPF、NFS/RDMA、客户端视图
+sudo norma --backend native        # 显式选择默认的原生后端
+sudo norma -p tcp                  # 普通 TCP NFS
+sudo norma --backend bpftrace      # 另一后端，需要 bpftrace >= 0.16
 ```
 
-Rocky/Alma/RHEL 8 缺少可用模块 BTF 时，先从运行内核的头文件生成布局数据：
+NFS 服务需已经运行。两种后端都要求 Linux x86_64、BPF 加载与 kprobe/返回
+探针挂接权限，以及符合要求的 NFSD 函数签名和布局数据。程序自动尝试运行时
+BTF；若无法解析所需探针，可提供与运行内核匹配、经过审查的布局文件：
 
 ```bash
-sudo dnf install -y gcc make "kernel-devel-$(uname -r)"
-sudo ./tools/prepare-layout.sh
-sudo nfstop
-
-# nfsdtop 还需要 bpftrace，nfstop 不需要：
-sudo dnf install -y bpftrace
-sudo nfsdtop
+sudo norma --layout /path/to/layout.json
+sudo norma --backend bpftrace --layout /path/to/layout.json
 ```
 
-安装后也可执行 `/usr/local/share/nfsmon/tools/prepare-layout.sh`。
-升级 EL8 内核后重新生成布局即可，**无需重编译两个二进制，也无需更换 CX3/CX4
-驱动**。程序本身不再限定 `4.18.0-553.el8_10`。对应的头文件必须属于正在运行
-的内核，这是结构偏移的数据要求，不是软件只支持一个版本。
+部署到新内核前请阅读 [兼容要求](docs/compatibility.md)。切换后端不能解决
+未知 NFSD 函数语义或错误的结构偏移。程序**不会自动回退到另一后端**。
+
+## 两种后端：异同、优劣与选择
+
+| 对比项 | 原生 eBPF（默认） | bpftrace（`--backend bpftrace`） |
+|---|---|---|
+| 共同能力 | NFSv3/v4 完成字节和操作次数；RDMA/TCP/UDP 与地址筛选；全部分组；相同界面、窗口、文本和 JSON 输出 | 相同 |
+| 目标机器部署 | 一个内嵌 BPF 对象的 `norma` 可执行文件 | 同一个 `norma`，另需安装 `bpftrace >= 0.16` 及其正常工作的运行依赖 |
+| 运行时编译工具 | 不需要 Go 编译器、clang 或 libbpf 动态库 | 启动时由 bpftrace 编译生成的脚本，其版本和运行环境需支持用到的探针与功能 |
+| 采集路径 | Go 直接挂接探针、读取累计 BPF map | Go 管理 bpftrace 子进程并解析它输出的累计文本帧 |
+| 启动与额外开销 | 无需启动编译子进程、解析文本帧 | 增加脚本编译、子进程启动和文本帧处理 |
+| 文件视图 | 设备号/inode，附可选父目录/文件名提示；提示可能截断，重命名后可能过时 | 设备号/inode，无路径名提示 |
+| 诊断信息 | 内存读取失败、map 容量不足、在途记录问题、操作失败、文件名提示丢失 | 保留 bpftrace 启动与运行错误，报告操作失败和在途记录覆盖 |
+| 主要优势 | 目标机器依赖少，适合日常监控及批量部署 | 适合已有 bpftrace 运维环境，可用其编译与探针错误排查该采集路径 |
+| 主要限制 | 受内嵌采集器及其已支持的函数语义约束，失败时需检查诊断与布局 | 依赖目标机器的 bpftrace 环境，并增加子进程；不会扩大两者共用的布局兼容范围 |
+
+**日常使用建议先选原生后端**，尤其是希望直接复制 Release 到多台服务端时。
+目标机器已有合适的 bpftrace 环境，或需要排查 bpftrace 采集路径时，可选择
+bpftrace 后端。某后端失败后，先查看错误，再显式尝试另一后端。
+
+项目尚未通过基准测试证明某后端具有更低 CPU 占用或更高吞吐；表中的开销
+区别来自实现方式。两者都使用容量有限的 map，快照均非全局原子快照，内核
+未送达的返回探针事件无法补回。bpftrace 的排队快照若被合并，累计总量保留，
+但峰值时间分辨率会降低。实现细节见 [架构说明](docs/architecture.md)。
 
 ## 常用命令
 
-两套工具参数完全一致，把 `nfstop` 替换为 `nfsdtop` 即可。
-
 | 命令 | 含义 |
 |---|---|
-| `sudo nfstop` | 默认 NFS/RDMA、每客户端、1 秒采样 |
-| `sudo nfstop -p tcp` | 普通 TCP NFS |
-| `sudo nfstop -i eno2` | 默认转为 TCP NFS，筛选本机 eno2 上的 IP |
-| `sudo nfstop -p rdma -i ib0` | 指定 ib0 本机地址的 NFS/RDMA |
-| `sudo nfstop -p all` | 所有 NFS 传输，包括 TCP、UDP、RDMA |
-| `sudo nfstop -w 10m` | 1 分钟与 10 分钟平均，10 分钟峰值 |
-| `sudo nfstop -b` | 自动 bit/s、kbit/s、Mbit/s、Gbit/s |
-| `sudo nfstop -F 40.0.0.0/16` | 只看该客户端网段；也接受单个 IP |
-| `sudo nfstop -g files` | 按文件的设备号和 inode 查看 |
-| `sudo nfstop -g users` | 按 UID 查看；groups 按 GID，servers 按服务端地址 |
-| `sudo nfstop -t -s 120` | 文本输出，120 秒后退出 |
-| `sudo nfstop --json` | JSON Lines，原始字节与 B/s，包含操作计数和 ops/s |
+| `sudo norma` | 默认原生 eBPF、NFS/RDMA、每客户端、1 秒采样 |
+| `sudo norma --backend bpftrace` | 显式使用 bpftrace，其他参数通用 |
+| `sudo norma -p tcp` | 普通 TCP NFS |
+| `sudo norma -i eno2` | 默认选择 TCP NFS，按 eno2 的本机 IP 筛选 |
+| `sudo norma -p rdma -i ib0` | 按 ib0 本机地址筛选 NFS/RDMA |
+| `sudo norma -p all` | TCP、UDP、RDMA 所有 NFS 传输 |
+| `sudo norma -w 10m -b` | 1 分钟与 10 分钟平均、10 分钟峰值，以 bit/s 显示 |
+| `sudo norma -F 40.0.0.0/16` | 按客户端网段筛选，也接受单个 IP |
+| `sudo norma -g files` | 按文件的设备号和 inode 查看 |
+| `sudo norma -g users` | 按 UID 查看；`groups` 按 GID，`servers` 按服务端地址 |
+| `sudo norma --backend bpftrace -g users -p tcp` | bpftrace 后端按 UID 查看 TCP NFS |
+| `sudo norma -t -s 120` | 文本输出，120 秒后退出 |
+| `sudo norma --json -s 60` | JSON Lines，包含字节、B/s、操作计数与 ops/s |
 
-`-i` 是按网卡的本机 IP 筛选 NFS 服务请求，并非抓取该网卡上所有协议的流量。
-省略所有参数就是 RDMA；`-i` 且未指定 `-p` 时选择 TCP。普通 NFS 即使通过
-IPoIB 传输，仍应选 TCP。历史环境变量 `NFSMON_TRANSPORT` 仍保留兼容，显式
-`-p` 优先。
+`-i` 按网卡的本机 IP 筛选 NFS 服务请求，并非抓取该网卡上所有协议的流量。
+省略参数默认 RDMA；`-i` 且未指定 `-p` 时选择 TCP。普通 NFS 即使通过
+IPoIB 传输，仍应选 TCP。
 
 ## 界面与统计
 
-默认每个客户端显示 READ、WRITE 两行，列为：
+默认每个客户端显示 READ、WRITE 两行：READ 表示客户端从服务端读取，
+WRITE 表示客户端写入服务端。
 
 | 列 | 定义 |
 |---|---|
-| NOW | 最近一个采样间隔的速度 |
-| AVG 1m | 过去 1 分钟平均速度 |
-| AVG 5m | 过去 5 分钟平均速度，窗口可用 `-w` 修改 |
+| NOW | 最近一个采样间隔的速度，默认 1 秒，可用 `-r` 修改 |
+| AVG 1m | 已观察的过去 1 分钟平均速度，包含无 I/O 的时间 |
+| AVG 5m | 可配置窗口平均速度，`-w` 最大支持 24 小时 |
 | PEAK 5m | 同一窗口中最高的单次采样速度 |
 | TOTAL | 从本次启动起累计完成的数据量 |
 
-READ 是计算节点从服务端读取；WRITE 是计算节点写入服务端。平均值按实际
-经过时间加权，包含无 I/O 的时间。刚启动未满窗口时只除以已观察的时间，不
-假装已有完整的 5 分钟历史。峰值是默认 1 秒采样的峰值，不是无法观测的瞬时
-硬件峰值。`-r 2s` 可改采样间隔。
+均值按实际时间加权。刚启动未满窗口时只除以已观察的时间，不假装已有完整
+历史。峰值是采样峰值，不是瞬时硬件峰值。指标定义见 [metrics](docs/metrics.md)。
 
-默认单位随数值自动切换 B/s、KiB/s、MiB/s、GiB/s；`B` 键切换字节/比特。
-`o` 键或启动参数 `--ops` 可显示完成的操作次数与 ops/s；排序仍按数据吞吐。
-`s` 切换排序；`t` 切换双向/读/写/合计；`p` 暂停显示但继续采样；方向键滚动。
+默认自动切换 B/s、KiB/s、MiB/s、GiB/s；`B` 切换字节/比特，`-b` 以比特启动。
+`o` 或 `--ops` 显示操作次数与 ops/s；`s` 切换排序；`t` 切换双向/读/写/合计；
+`p` 暂停显示但继续采样；方向键滚动；`q` 或 Ctrl+C 退出并恢复原终端画面和
+输入模式。`-t` 或重定向时输出无终端转义序列的普通文本，`-N` 异步查询名称，
+默认显示数字地址。
 
-**Ctrl+C 或 q 退出后恢复进入程序前的终端画面和输入模式。** 使用独立的终端
-备用屏幕，不执行 `clear`，不清除 scrollback，不覆盖原来的命令输出。`-t` 或
-重定向时输出普通文本；终端若不支持备用屏幕，建议使用 `-t`。
+统计的是 NFSD 服务端成功完成的逻辑读写字节，包含服务端缓存命中的读取，
+不包含 RPC/RDMA 协议头、线上重传或物理磁盘 I/O，也不保证客户端已收到
+回复或数据已持久化。本机作为客户端访问其他 NFS 服务端的 I/O 不在范围内。
 
-统计的是 NFSD 服务端成功完成的逻辑读写字节，包含服务端缓存命中的读取。
-本机作为客户端访问其他 NFS 服务端的 I/O 不属于这些服务端探针的统计范围。
-它不是物理磁盘 I/O、IB 端口线上流量，也不包含协议头和重传开销。
+## 构建与发布
 
-## 适配范围
-
-主要范围是 **x86_64 Rocky/Alma/RHEL 8 的标准 4.18 内核系列**，同系列补丁
-更新通过本机头文件重新生成布局。具有完整 BTF 类型与兼容函数签名的其他
-内核走自动适配；并不宣称所有 5.x/6.x 内核均已验证可用。
-
-软件按字段、函数签名、探针能力判断，不按某个固定 `uname -r` 拒绝运行。
-完整范围和扩展方法见 [docs/compatibility.md](docs/compatibility.md)。
-IPv4/IPv6 地址解析包含在两个后端中；本次未做现场验证。
-
-## GitHub 开源与 Release
-
-源代码包可以直接作为 GitHub 仓库根目录，包含 README、许可证、上游声明、
-贡献说明、问题模板、构建及 Release 工作流。当前版本号为 `v0.2.0`。
+普通构建只需 Go >= 1.25.3 和 make。仓库包含已生成的 BPF 对象，不修改
+BPF 源码时无需安装 clang：
 
 ```bash
 make build
-make release VERSION=v0.2.0
+./bin/norma --version
+make release VERSION=v0.3.0        # 打包还需 tar、zip
 ```
 
-推送 `v0.2.0` 这样的标签后，GitHub Actions 自动编译两套工具，创建 Release，
-上传 Linux amd64 的 `.tar.gz`、`.zip` 和 SHA256。详细首次发布步骤见
-[docs/publishing.md](docs/publishing.md)。Go 模块使用本地 `nfsmon` 名称，不冒用
-上游仓库路径；公布仓库后可按文档改为实际 GitHub 模块路径。
+`make`/`make build` 只生成 **`bin/norma`**，一个静态 Go 可执行文件内包含两种
+后端。目标机器使用原生后端无需编译工具；bpftrace 后端另需安装 bpftrace。
 
-`nfstop` 是嵌入 eBPF 对象的静态 Go 可执行文件；`nfsdtop` 是静态界面和启动器，
-**仍需要目标机器安装 bpftrace >=0.16**。没有把 bpftrace 伪装成独立静态工具。
+修改 BPF 源码后，在构建机安装 clang/LLVM、libbpf 开发头文件和 gcc，并重新
+生成 BPF 对象与绑定：
 
-v0.2.0 尚未进行探针挂接、NFS 工作负载或跨内核运行验证。工作流执行构建与
-发布；编译成功不代表所有目标内核已经通过运行验证。
+```bash
+# Ubuntu 构建依赖示例：
+sudo apt-get install clang llvm libbpf-dev gcc make
+make generate
+make build
+```
+
+推送版本标签后，GitHub Actions 构建并发布 Linux amd64 的 `.tar.gz`、`.zip`
+与 SHA256；发布步骤见 [publishing](docs/publishing.md)。构建和 CLI 检查不等于
+目标内核运行验证，探针挂接、NFS 工作负载计数及跨内核行为需在部署环境验证。
+
+## 许可证与上游
+
+新增代码采用 MIT；原生 BPF 为 MIT OR GPL-2.0；bpftrace 后端为 BSD-2-Clause。
+[NOTICE](NOTICE) 和 `licenses/` 保留上游声明与依赖许可证。本项目是下游项目，
+上游链接见 NOTICE。

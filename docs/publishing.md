@@ -1,84 +1,75 @@
 # Publish on GitHub
 
-The source archive contains a repository root, not a patch that must be applied
-to upstream. It intentionally has no credentials, upstream `.git` directories,
-local kernel headers, profiling logs or host-specific layout JSON.
+The project is published at [guixiaocai/norma](https://github.com/guixiaocai/norma).
+Public commands and release packages use `norma`. The internal Go module name
+remains `nfsmon`; that name does not affect the executable or repository name.
+Upstream ownership notices must remain intact.
 
-## First push
+## Build a release
 
-Create an empty **public** GitHub repository named `norma` under `guixiaocai`.
-Do not initialize it with a README, license or gitignore: this source already
-includes all three. From the unpacked source root:
-
-```bash
-git init -b main
-git add .
-git commit -m "Introduce portable NFS server I/O monitors"
-git remote add origin git@github.com:guixiaocai/norma.git
-git push -u origin main
-```
-
-The module is `nfsmon`, so the repository builds before the owner/name is known.
-For a public Go module namespace, replace `module nfsmon`, Go imports beginning
-with `nfsmon/`, and the two linker `-X nfsmon/internal/app...` paths in
-`tools/build.sh` with `github.com/guixiaocai/norma`. This namespace change is
-optional for users who download the source and run `make build`.
-
-Do not change upstream ownership notices when adopting a repository name.
-
-## Binary release
-
-Update the version/change log as desired, then create a semantic-version tag:
+Ordinary builds use the checked-in BPF object and require Go >= 1.25.3 and make.
+Release packaging also needs tar and zip:
 
 ```bash
-git tag -a v0.2.0 -m "norma v0.2.0"
-git push origin v0.2.0
+make build
+./bin/norma --version
+make release VERSION=v0.3.0
 ```
 
-`.github/workflows/release.yml` builds both executables on a GitHub runner and
-publishes the tag's release using GitHub's own `gh` CLI and `GITHUB_TOKEN`.
-Allow repository Actions and its release job's `contents: write` permission.
-No personal access token or username is embedded.
+There is one static Go executable, **`bin/norma`**, containing both collectors.
+Its default native backend requires no installed bpftrace/compiler. The
+`--backend bpftrace` path invokes the target host's installed bpftrace >= 0.16
+and does not bundle that runtime.
+
+If BPF source was changed, first install clang/LLVM, libbpf development headers
+and gcc, run `make generate`, and retain the generated object/bindings alongside
+the source. This step belongs on the build machine.
+
+## Publish a version tag
+
+Update `CHANGELOG.md`, `docs/release-notes.md` and the default version, then
+commit the completed changes and push the branch. Create a new version tag;
+existing published tags must continue to identify their original source.
+
+```bash
+git tag -a v0.3.0 -m "norma v0.3.0"
+git push origin v0.3.0
+```
+
+`.github/workflows/release.yml` regenerates BPF, runs Go checks and builds the
+release on a GitHub runner. It publishes the tag's release using GitHub's `gh`
+CLI and `GITHUB_TOKEN`. Repository Actions and the release job's
+`contents: write` permission must be enabled. No personal access token or
+username is embedded in the project.
 
 Release assets:
 
-- `norma-v0.2.0-linux-amd64.tar.gz`
-- `norma-v0.2.0-linux-amd64.zip`
+- `norma-v0.3.0-linux-amd64.tar.gz`
+- `norma-v0.3.0-linux-amd64.zip`
 - `SHA256SUMS`
-- A source snapshot, also automatically offered by GitHub for the tag.
+- GitHub's source snapshots for the tag.
 
-Both executables use `CGO_ENABLED=0`. `nfstop` embeds the BPF object; runtime
-kernel adaptation occurs via BTF or generated layout JSON. `nfsdtop` invokes
-the user's installed bpftrace and is not a bundled bpftrace runtime. Release
-archives include runtime tools and notices. Generated BPF bindings/object are
-also included in the source, so users can build frontend binaries without
-regenerating BPF; `make build` does regenerate it from source.
-
-`workflow_dispatch` builds downloadable artifacts without publishing a release.
-Push/PR build workflows and release workflows compile/package only; they do
-not run tests, load BPF, alter NFS services or benchmark workloads.
-
-The prepared artifacts were compiled locally but **not uploaded to GitHub**.
-This document describes the later release flow; no public repository is assumed.
-
-References: [GitHub Go build workflows](https://docs.github.com/en/actions/tutorials/build-and-test-code/go),
-[gh release create](https://cli.github.com/manual/gh_release_create).
+Archives contain `bin/norma`, runtime tools, documentation and licenses.
+`workflow_dispatch` prepares downloadable artifacts without publishing a
+release. Build/check jobs do not attach BPF probes, alter NFS services or run an
+NFS workload; deployment validation must happen on the intended server.
 
 ## Repository discovery
 
-Use this repository description to describe the actual monitoring scope:
+Suggested repository description:
 
-> iftop-style Linux NFS server I/O monitor: per-client RDMA/TCP throughput, native eBPF or bpftrace, rolling averages and EL8 kernel adaptation.
+> iftop-style Linux NFS server I/O monitor: per-client RDMA/TCP/UDP throughput, native eBPF or bpftrace, rolling averages and JSON output.
 
-Recommended GitHub topics:
+Suggested GitHub topics:
 
 ```text
 nfs nfs-server rdma infiniband ebpf bpftrace linux monitoring observability
-performance terminal tui golang hpc storage rocky-linux rhel
+performance terminal tui golang hpc storage
 ```
 
-Keep the English README as the landing page and link its Chinese translation
-near the top. Topics and a precise description help developers searching for
-NFS, RDMA and Linux performance tools find the project. Set topics in the
-repository's About panel, as described in
-[GitHub's topics documentation](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/classifying-your-repository-with-topics).
+Keep the English README as the landing page and link the Chinese translation
+near the top. Set description/topics in the repository's About panel.
+
+References: [GitHub Go workflows](https://docs.github.com/en/actions/tutorials/build-and-test-code/go),
+[gh release create](https://cli.github.com/manual/gh_release_create),
+[GitHub repository topics](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/classifying-your-repository-with-topics).

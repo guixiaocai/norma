@@ -7,7 +7,7 @@ on:
       version:
         description: Artifact version (manual builds do not publish)
         required: true
-        default: v0.2.0
+        default: v0.3.0
 permissions:
   contents: read
 jobs:
@@ -29,8 +29,10 @@ jobs:
         run: '[[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9._-]+)?$ ]]'
       - name: Build dependencies
         run: sudo apt-get update && sudo apt-get install -y clang llvm libbpf-dev gcc make zip
-      - name: Compile and package (no tests)
+      - name: Test, compile and package norma
         run: |
+          ./tools/generate.sh
+          go test ./...
           ./tools/build.sh
           ./tools/package.sh
       - uses: actions/upload-artifact@v4

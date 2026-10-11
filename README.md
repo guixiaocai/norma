@@ -2,161 +2,169 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [Releases](https://github.com/guixiaocai/norma/releases)
 
-**NFS server I/O monitor for RDMA, TCP and UDP, with an iftop-style terminal interface.**
+**An iftop-style NFS server I/O monitor for RDMA, TCP and UDP.**
 
-Find which client is reading or writing, compare bursts with rolling averages,
-and keep an eye on shared-storage workloads directly from your terminal.
+See which clients are reading or writing, compare bursts with rolling averages,
+and inspect shared-storage workloads directly from your terminal. The name
+comes from **NFS over RDMA**, the default transport; TCP and UDP are also supported.
 
-Two collectors share the same command line and display: **nfstop** attaches
-native eBPF probes; **nfsdtop** supervises a bpftrace collector. Both count
-successful NFSD VFS read/write completion bytes for NFSv3/v4. The default
-transport is **NFS over RDMA**. TCP and UDP NFS are selectable.
-
-The name comes from **NFS over RDMA**, the default transport. The same tools
-also monitor TCP and UDP NFS. Release commands are `nfstop` and `nfsdtop`.
+`norma` is one executable with two collectors: embedded **native eBPF** by
+default, or **bpftrace** selected with `--backend bpftrace`. Both measure
+successful NFSD VFS read/write completions for NFSv3/v4 and use the same flags,
+display and metric definitions.
 
 ## Why use it?
 
-- **Per-client visibility across RDMA and TCP.** Attribute successful NFS
-  reads and writes to clients, including reads served from the server's cache.
-  Use client IP/CIDR and server-interface address filters to focus on a workload;
-  switch to file, UID, GID or server views when you need another angle.
-- **EL8 kernel adaptation without rebuilding the executables.** Resolve layouts
-  and recognized NFSD signatures from runtime BTF, or prepare layout data from
-  matching Rocky/Alma/RHEL 8 kernel headers. For compatible EL8 patch updates,
-  regenerate the layout JSON and keep the same binaries.
-- **Two collectors, one workflow.** Choose the embedded native eBPF backend or
-  the bpftrace backend with the same flags, interface and metric definitions.
-  `nfstop` needs no installed bpftrace; `nfsdtop` uses your installed bpftrace.
-- **Rolling statistics with explicit timing.** See the current rate, 1-minute
-  and configurable-window averages, the highest sample in the window, and
-  session totals. Averages weight elapsed time and include idle intervals;
-  pausing the display keeps collection running.
-- **A terminal tool that also fits scripts.** Interactive byte/bit units and
-  terminal restoration on exit sit alongside plain text, JSON Lines and timed
-  collection. JSON retains raw byte and operation metrics for downstream tools.
-
-The primary target is Linux x86_64 NFS servers on Rocky/Alma/RHEL 8, including
-shared-storage and HPC environments using NFS over RDMA/InfiniBand. See the
-[compatibility requirements](docs/compatibility.md) before deployment.
-
-## At a glance
-
-| Feature | Both tools |
-|---|---|
-| Per-client read/write | Current rate, 1-minute average, 5-minute average, 5-minute peak, session total |
-| Window | `-w 3m`, `-w 10m`, up to 24 hours |
-| Units | Automatic B/s → KiB/s → MiB/s → GiB/s; `-b` selects bits/s |
-| Terminal | Alternate screen; `q` or Ctrl+C restores the original screen and terminal mode |
-| Scope | Clients, servers, UIDs, GIDs, files; client IP/CIDR and local-interface address filters |
-| Output | Interactive, plain text, JSON Lines |
-| Kernel adaptation | Runtime BTF signatures and offsets, or per-kernel layout data generated from EL8 headers |
+- **Per-client visibility, including server-cache reads.** Attribute completed
+  NFS reads and writes to clients across RDMA, TCP and UDP. Filter by client
+  IP/CIDR or server-interface address, and group by client, server, file, UID or GID.
+- **Two backends in one command.** Deploy the native collector without a runtime
+  bpftrace installation, or explicitly choose bpftrace for an existing tracing
+  environment. Compare the deployment tradeoffs below.
+- **Kernel adaptation based on capabilities.** Resolve field offsets and
+  recognized NFSD signatures from runtime BTF, or supply a reviewed kernel layout
+  with `--layout`. A matching layout does not require rebuilding the executable.
+- **Rolling statistics with explicit timing.** See current rate, 1-minute and
+  configurable-window averages, the highest sample in the window, and session
+  totals. Averages include idle time; pausing the display keeps collection running.
+- **A terminal tool that also fits scripts.** Automatic unit scaling, byte/bit display and
+  terminal restoration sit alongside plain text, JSON Lines and timed collection.
+  JSON retains byte and operation metrics independently of display units.
 
 ## Quick start
 
-Download and unpack a `norma-vX.Y.Z-linux-amd64` release archive:
+Download and unpack a `norma-vX.Y.Z-linux-amd64` release archive on the NFS server:
 
 ```bash
 sudo ./tools/install.sh
-sudo nfstop
-sudo nfsdtop
+sudo norma                         # native eBPF, NFS/RDMA, client view
+sudo norma --backend native        # explicit selection of the default backend
+sudo norma -p tcp                  # ordinary TCP NFS
+sudo norma --backend bpftrace      # alternative; needs bpftrace >= 0.16
 ```
 
-`nfsdtop` additionally needs `bpftrace >= 0.16`. On Rocky/Alma/RHEL 8 with no
-usable module BTF, prepare the kernel layout once:
+The NFS server must already be running. Both backends require Linux x86_64,
+permission to load BPF and attach kprobes/return probes, and compatible NFSD
+function signatures and layout metadata. Runtime BTF is tried automatically;
+if it cannot describe the required probes, use a reviewed matching layout:
 
 ```bash
-sudo dnf install -y gcc make "kernel-devel-$(uname -r)"
-sudo ./tools/prepare-layout.sh
-sudo nfstop
-# For the alternative collector:
-sudo dnf install -y bpftrace
-sudo nfsdtop
+sudo norma --layout /path/to/layout.json
+sudo norma --backend bpftrace --layout /path/to/layout.json
 ```
 
-Use the matching kernel headers after a kernel update to regenerate the layout
-data. **The executable does not need rebuilding for an EL8 kernel patch update.**
-These tools do not change exports, mount options, NFS service configuration or
-NIC drivers. The NFS server must already be running.
+See [compatibility](docs/compatibility.md) before deploying on a new kernel.
+Changing backend does not repair an unsupported NFSD signature or incorrect
+layout. There is **no automatic backend fallback**.
+
+## Choose a backend
+
+| Aspect | Native eBPF (default) | bpftrace (`--backend bpftrace`) |
+|---|---|---|
+| Shared behavior | NFSv3/v4 completion bytes and operations; RDMA/TCP/UDP filters; all grouping modes; same UI, windows, text and JSON output | Same |
+| Deployment | One `norma` executable with embedded BPF objects | Same executable plus installed `bpftrace >= 0.16` and its working runtime dependencies |
+| Runtime build tools | No Go compiler, clang or libbpf shared library needed | bpftrace compiles the generated tracing script at startup; its package/runtime must support the probes and features used |
+| Collection path | Go attaches probes and reads cumulative BPF maps directly | A supervised bpftrace process emits cumulative text frames that Go parses |
+| Startup and overhead | Avoids launching a compiler process and parsing text frames | Adds script compilation, subprocess startup and text-frame processing |
+| File view | Device/inode identity plus optional parent/basename hints; hints may be truncated or stale after rename | Device/inode identity, without pathname hints |
+| Diagnostics | Reports memory-read, map-capacity and inflight-record problems, failed operations and dropped name hints | Retains bpftrace launch/runtime diagnostics; reports failed operations and overwritten inflight records |
+| Practical advantage | Fewer target-host dependencies; convenient for routine monitoring and deployment to many servers | Fits hosts already maintained for bpftrace; compiler and probe diagnostics help investigate that collection path |
+| Main tradeoff | Uses the bundled collector and its supported profiles; failures require checking its diagnostics and layout | Depends on the target host's bpftrace installation and adds a child process; switching does not broaden the shared layout contract |
+
+**Start with native** for routine use, especially when you want to copy a release
+archive to several servers. Choose bpftrace when your host already has a suitable
+bpftrace installation or you specifically want to investigate the bpftrace path.
+If one backend fails, inspect the error before selecting the other explicitly.
+Neither backend has a measured throughput/CPU advantage established by this
+project; the overhead differences above describe their implementation.
+
+Both collectors expose live, non-atomic snapshots and bounded maps. Missing
+kernel return probes cannot be reconstructed. bpftrace may coalesce queued
+snapshots if the frontend falls behind: cumulative totals are retained, while
+peak timing becomes less precise. See [architecture](docs/architecture.md).
+
+## Common commands
 
 ```bash
-sudo nfstop                         # NFS/RDMA, client view
-sudo nfstop -p tcp                  # ordinary TCP NFS
-sudo nfstop -i eno2                 # TCP NFS to eno2's local IP addresses
-sudo nfstop -p rdma -i ib0          # RDMA NFS to ib0's local IP addresses
-sudo nfstop -p all -F 40.0.0.0/16  # all NFS transports, selected client network
-sudo nfstop -w 10m -b               # 1m and 10m averages, 10m peak, bit/s
-sudo nfsdtop -g files               # per-file device/inode accounting
-sudo nfsdtop -t -s 120              # plain text for two minutes
-sudo nfstop --json -s 60            # machine-readable byte-based metrics
+sudo norma -i eno2                 # TCP NFS to eno2's local IP addresses
+sudo norma -p rdma -i ib0           # RDMA NFS to ib0's local IP addresses
+sudo norma -p all -F 40.0.0.0/16   # all transports, selected client network
+sudo norma -w 10m -b               # 1m/10m averages, 10m peak, bit/s
+sudo norma -g files                # per-file accounting
+sudo norma --backend bpftrace -g users -p tcp
+sudo norma -t -s 120               # plain text for two minutes
+sudo norma --json -s 60            # JSON Lines with byte/operation metrics
 ```
 
-`-i` is an **NFS local-address filter**, not a packet capture/ingress filter.
-These tools monitor ordinary **NFS** traffic when TCP is selected; they do not
-replace a general all-protocol packet monitor.
+`-i` filters NFS requests by the interface's **local IP addresses**, not physical
+packet ingress. It selects TCP when `-p` is omitted. These probes monitor NFS
+server I/O; they do not monitor every protocol on the interface.
 
 ## Display and controls
 
-Each client has READ and WRITE rows. READ means a client reads from this NFS
-server; WRITE means a client writes to it. `NOW` is the latest sampling interval.
-`AVG 1m` and `AVG 5m` are time-weighted rolling averages including idle time.
-`PEAK 5m` is the maximum sample rate in the same window. The default sample is
-one second, configurable with `-r`.
+Each client has READ and WRITE rows: READ is a client reading from this server;
+WRITE is a client writing to it.
+
+| Column | Meaning |
+|---|---|
+| NOW | Rate over the latest sample interval; one second by default (`-r`) |
+| AVG 1m | Time-weighted average over the observed last minute, including idle time |
+| AVG 5m | Time-weighted average over the configurable window (`-w`, up to 24 hours) |
+| PEAK 5m | Highest individual sample rate in that window |
+| TOTAL | Successfully completed bytes since this monitor started |
+
+Before a full window has elapsed, averages use only observed time. Peak is a
+sample peak, not an instantaneous hardware peak. See [metrics](docs/metrics.md).
 
 | Key | Action |
 |---|---|
 | `q`, Ctrl+C | Exit and restore the original terminal |
-| `B` | Toggle automatic byte/s and bit/s units |
+| `B` | Toggle byte/s and bit/s display (`-b` starts in bit/s) |
 | `o`, `--ops` | Toggle/show completed operations per second |
 | `s` | Cycle sort by current, 1m average, window average, peak, total, name |
 | `t` | Both directions, read, write, combined |
-| `p` | Freeze the display; sampling and rolling-window updates continue |
+| `p` | Freeze the display; collection and rolling windows continue |
 | Up/Down, j/k, Page Up/Down | Scroll |
 
-No screen-clear command or scrollback erase is used. Redirection and `-t` use
-append-only text with no terminal escape sequences. Optional `-N` name lookup
-runs asynchronously; addresses remain numeric by default.
+Redirection and `-t` produce append-only text without terminal escape sequences.
+Optional `-N` name lookup runs asynchronously; addresses are numeric by default.
 
-## Compatibility and accounting
-
-The main deployment range is the **x86_64 Rocky/Alma/RHEL 8 standard 4.18 kernel
-family**, not one exact kernel release. A BTF route also adapts kernels exposing
-the supported NFSD function semantics. Unknown signatures are reported as
-capability errors instead of guessed from a version number.
-
-See [compatibility](docs/compatibility.md) for requirements and scope,
-[metrics](docs/metrics.md) for window and peak definitions, and
-[architecture](docs/architecture.md) for the two backends. CX3, CX4 and later
-adapters use the same NFSD collection path; supported NIC drivers do not need
-modification.
+## Accounting boundary
 
 These are **server logical completion bytes**, including reads satisfied by
 the server page cache. They exclude RPC/RDMA headers and are not wire traffic,
-physical-disk throughput or a guarantee of reply delivery/durable storage.
-The host's own outgoing NFS client access is outside these server probes.
+physical-disk throughput or proof of reply delivery/durable storage. The host's
+own outgoing NFS client access is outside these server probes.
 
-## Build and publish
+## Build and release
 
-Build with Go >= 1.25.3, clang/LLVM, libbpf development headers and gcc:
+Ordinary builds need Go >= 1.25.3 and make. The repository includes the generated
+BPF object, so no clang installation is needed unless you change BPF source.
 
 ```bash
-# Example on Ubuntu:
-sudo apt-get install clang llvm libbpf-dev gcc make zip
 make build
-make release VERSION=v0.2.0
+./bin/norma --version
+make release VERSION=v0.3.0        # packaging also needs tar and zip
 ```
 
-The repository includes build-only GitHub Actions and a tag-triggered Release
-workflow. It produces both static Go executables, tar/zip archives and SHA256
-checksums. See [publishing](docs/publishing.md) for the complete sequence.
-Only Linux amd64 binaries are advertised; arm64 needs a separate register ABI
-adapter. The bpftrace frontend still requires an installed bpftrace executable.
+`make`/`make build` produce **`bin/norma`**. Both collectors are included in this
+static Go executable. Only the bpftrace backend needs a target-host bpftrace
+installation.
 
-## Project status
+After changing BPF source, install clang/LLVM, libbpf development headers and gcc,
+then regenerate bindings before building:
 
-This version was prepared as a source/binary release candidate. No tests,
-probe attachment, NFS workload or cross-kernel runtime validation were performed
-for this revision. Build workflows also intentionally omit tests.
+```bash
+# Example on an Ubuntu build machine:
+sudo apt-get install clang llvm libbpf-dev gcc make
+make generate
+make build
+```
+
+GitHub Actions builds Linux amd64 tar/zip archives and SHA256 checksums from a
+version tag. See [publishing](docs/publishing.md). Build and CLI checks do not
+establish probe correctness on every kernel. NFSD attachment, workload accounting
+and cross-kernel runtime validation must be performed on the intended server.
 
 ## License and upstream credit
 

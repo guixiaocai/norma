@@ -1,6 +1,6 @@
-NFSmon — portable NFS server I/O monitors
+norma — NFS server I/O monitor
 
-This repository is a downstream development of the 2026 Rocky 8 NFSD VFS
+This repository is a downstream development of a 2026 NFSD VFS
 adaptation of two projects. It is not a release by the upstream projects.
 The adaptation's MIT notice is preserved in licenses/rocky8-adaptation-MIT.
 
@@ -11,7 +11,7 @@ nfstop: MIT ORCD / orcd-ebpf-tools, Copyright (c) 2025 mit-orcd, MIT.
 nfsdtop: The FrauBSD Project, Copyright (c) 2020-2021, BSD 2-Clause.
   https://github.com/FrauBSD/nfsdtop
   Original license: licenses/nfsdtop-BSD-2-Clause.
-  The bpftrace backend and compatibility launcher retain BSD-2-Clause.
+  The bpftrace backend retains BSD-2-Clause.
 
 New shared frontend, layout resolver, documentation and build tools are MIT.
 The native BPF program is offered under MIT OR GPL-2.0 and declares the
@@ -21,9 +21,10 @@ Go runtime and dependency licenses are included in licenses/go-dependencies.
 The original dependency lockfile is retained, including some upstream UI
 modules which are no longer directly used. Build-tool dependencies are included.
 libbpf helper declarations are used at build time via system development
-headers (LGPL-2.1 OR BSD-2-Clause); no libbpf shared library is required by nfstop.
+headers (LGPL-2.1 OR BSD-2-Clause); no libbpf shared library is required at runtime.
 
 The interface is inspired by iftop. No iftop source code is included.
 
-Release architecture: Linux x86_64. The nfsdtop executable is a static Go
-frontend, and invokes the separately installed bpftrace runtime.
+Release architecture: Linux x86_64. norma is a static Go executable with native
+eBPF and bpftrace backends. Selecting bpftrace invokes the separately installed
+bpftrace runtime.

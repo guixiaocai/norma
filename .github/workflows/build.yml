@@ -16,8 +16,12 @@ jobs:
           cache: true
       - name: Build dependencies
         run: sudo apt-get update && sudo apt-get install -y clang llvm libbpf-dev gcc make zip
-      - name: Compile both collectors (no tests)
-        run: ./tools/build.sh
+      - name: Regenerate embedded BPF object
+        run: ./tools/generate.sh
+      - name: Test CLI and compile norma
+        run: |
+          go test ./...
+          ./tools/build.sh
       - uses: actions/upload-artifact@v4
         with:
           name: norma-linux-amd64

@@ -13,23 +13,24 @@ import (
 	"time"
 )
 
-var Version = "v0.2.0"
+var Version = "v0.3.0"
 var Commit = "source"
 
 type Options struct {
-	Transport, Interface, Group, Layout, Sort     string
-	Interval, Window, Duration                    time.Duration
-	Text, Bits, Numeric, Version, Help, JSON, Ops bool
-	Limit                                         int
-	Filter                                        string
-	Local                                         map[netip.Addr]bool
-	Client                                        *netip.Prefix
+	Backend, Transport, Interface, Group, Layout, Sort string
+	Interval, Window, Duration                         time.Duration
+	Text, Bits, Numeric, Version, Help, JSON, Ops      bool
+	Limit                                              int
+	Filter                                             string
+	Local                                              map[netip.Addr]bool
+	Client                                             *netip.Prefix
 }
 
 func Parse(name string, args []string, out io.Writer) (Options, error) {
 	o := Options{Group: "clients", Numeric: true, Interval: time.Second, Window: 5 * time.Minute, Sort: "now", Limit: 20}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(out)
+	fs.StringVar(&o.Backend, "backend", "native", "collector: native (default) or bpftrace")
 	fs.StringVar(&o.Transport, "p", "", "rdma (default), tcp, udp, all")
 	fs.StringVar(&o.Transport, "transport", "", "transport selector")
 	fs.StringVar(&o.Interface, "i", "", "local network interface; implies TCP unless -p is supplied")
@@ -55,9 +56,9 @@ func Parse(name string, args []string, out io.Writer) (Options, error) {
 	fs.Usage = func() {
 		fmt.Fprintf(out, "%s %s — NFS server I/O by client\n\nUsage: %s [options]\n\n", name, Version, name)
 		fs.PrintDefaults()
-		fmt.Fprintln(out, "\nExamples:\n  sudo "+name+"\n  sudo "+name+" -p tcp\n  sudo "+name+" -i eno2 -w 10m\n  sudo "+name+" -t -s 120\n\nKeys: q/Ctrl+C quit | B bytes/bits | s sort | t read/write/both/total | p pause display | ↑/↓ scroll\nREAD = client reads from server; WRITE = client writes to server. -i filters the interface's local IPs, not packet ingress.")
+		fmt.Fprintln(out, "\nExamples:\n  sudo "+name+"\n  sudo "+name+" --backend bpftrace\n  sudo "+name+" -p tcp\n  sudo "+name+" -i eno2 -w 10m\n  sudo "+name+" -t -s 120\n\nKeys: q/Ctrl+C quit | B bytes/bits | s sort | t read/write/both/total | p pause display | ↑/↓ scroll\nREAD = client reads from server; WRITE = client writes to server. -i filters the interface's local IPs, not packet ingress.")
 	}
-	// Retain old nfstop launch shortcuts without making users choose a view.
+	// Retain positional launch shortcuts without making users choose a view.
 	if len(args) > 0 && (args[0] == "clients" || args[0] == "tui" || args[0] == "simple") {
 		if args[0] == "simple" {
 			o.Text = true
@@ -78,6 +79,11 @@ func Parse(name string, args []string, out io.Writer) (Options, error) {
 	if fs.NArg() != 0 {
 		return o, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
+	switch o.Backend {
+	case "native", "bpftrace":
+	default:
+		return o, fmt.Errorf("--backend must be native or bpftrace (got %q)", o.Backend)
+	}
 	explicit := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "p" || f.Name == "transport" {
@@ -87,6 +93,8 @@ func Parse(name string, args []string, out io.Writer) (Options, error) {
 	if !explicit {
 		if o.Interface != "" {
 			o.Transport = "tcp"
+		} else if env := os.Getenv("NORMA_TRANSPORT"); env != "" {
+			o.Transport = env
 		} else if env := os.Getenv("NFSMON_TRANSPORT"); env != "" {
 			o.Transport = env
 		} else {
