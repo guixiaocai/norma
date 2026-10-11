@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# SPDX-License-Identifier: BSD-2-Clause
+# Compatibility launcher. The shared frontend supervises bpftrace and restores
+# the terminal on exit; nfsdtop remains a bpftrace collector.
+set -eu
+base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -x "$base/bin/nfsdtop" ]; then exec "$base/bin/nfsdtop" "$@"; fi
+if [ -x "$base/nfsdtop" ] && [ ! -d "$base/nfsdtop" ]; then exec "$base/nfsdtop" "$@"; fi
+exec nfsdtop "$@"

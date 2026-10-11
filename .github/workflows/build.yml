@@ -1,0 +1,24 @@
+name: Build
+on:
+  push:
+    branches: ['**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  binaries:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang llvm libbpf-dev gcc make zip
+      - name: Compile both collectors (no tests)
+        run: ./tools/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nfsmon-linux-amd64
+          path: bin/

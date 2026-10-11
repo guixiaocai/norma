@@ -1,0 +1,7 @@
+/bin/
+/dist/
+/.agents/
+/.codex/
+/.aws/
+*.tmp
+*.log
