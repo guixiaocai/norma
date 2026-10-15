@@ -13,7 +13,7 @@ Release packaging also needs tar and zip:
 ```bash
 make build
 ./bin/norma --version
-make release VERSION=v0.3.0
+make release VERSION=v0.4.0
 ```
 
 There is one static Go executable, **`bin/norma`**, containing both collectors.
@@ -32,8 +32,8 @@ commit the completed changes and push the branch. Create a new version tag;
 existing published tags must continue to identify their original source.
 
 ```bash
-git tag -a v0.3.0 -m "norma v0.3.0"
-git push origin v0.3.0
+git tag -a v0.4.0 -m "norma v0.4.0"
+git push origin v0.4.0
 ```
 
 `.github/workflows/release.yml` regenerates BPF, runs Go checks and builds the
@@ -44,8 +44,8 @@ username is embedded in the project.
 
 Release assets:
 
-- `norma-v0.3.0-linux-amd64.tar.gz`
-- `norma-v0.3.0-linux-amd64.zip`
+- `norma-v0.4.0-linux-amd64.tar.gz`
+- `norma-v0.4.0-linux-amd64.zip`
 - `SHA256SUMS`
 - GitHub's source snapshots for the tag.
 
@@ -53,6 +53,33 @@ Archives contain `bin/norma`, runtime tools, documentation and licenses.
 `workflow_dispatch` prepares downloadable artifacts without publishing a
 release. Build/check jobs do not attach BPF probes, alter NFS services or run an
 NFS workload; deployment validation must happen on the intended server.
+
+The repository-root `install.sh` resolves the latest stable release (or an
+explicit `--version`), downloads its archive and `SHA256SUMS`, verifies the
+archive and delegates to the packaged local installer. Keep those asset names
+and the extracted root directory stable. Test both installers with a temporary
+prefix before tagging; the local installer also supports `DESTDIR` for staging.
+
+The screenshot in `docs/images/dashboard.png` must come from the real dashboard
+renderer with deterministic `--demo` data. Keep its synthetic-data label in both
+READMEs and release notes. A screenshot and passing `--doctor` checks do not
+establish live attachment or production measurement accuracy.
+
+To regenerate the documented 140 × 40 dashboard from its deterministic fixture:
+
+```bash
+NORMA_SCREENSHOT=/tmp/norma.ansi go test ./internal/app -run TestDashboardScreenshot -count=1
+python3 tools/render-screenshot.py /tmp/norma.ansi docs/images/dashboard.png
+```
+
+Image rendering needs Python with Pillow and the DejaVu Sans Mono font on the
+documentation machine; these are not norma runtime requirements. Visually check
+the resulting image and keep its values labeled as synthetic.
+
+The Rocky Linux 8.10 container smoke check verifies that the release binary can
+report its version and run demo output in that userspace. Containers share the
+runner's kernel, so this does not validate Rocky NFSD probes, RDMA hardware or
+live workload accounting.
 
 ## Repository discovery
 

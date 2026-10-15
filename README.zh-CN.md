@@ -5,7 +5,8 @@
 **像 iftop 一样，在终端中查看每个客户端对 NFS 服务端的读写吞吐，支持 RDMA、TCP 和 UDP。**
 
 `norma` 用于定位共享存储的客户端 I/O、比较突发流量与滚动平均。名称取自
-**NFS over RDMA**，对应默认传输方式；也支持 TCP、UDP NFS。
+**NFS over RDMA**。现在默认监控 **RDMA、TCP、UDP 全部受支持的 NFS 传输**，
+普通 TCP NFS 无需再补充传输参数。
 
 现在只有一个可执行文件和一个命令：**`norma`**。默认使用内嵌的原生 eBPF
 后端，`--backend bpftrace` 显式选择 bpftrace 后端。两者共用参数、界面和
@@ -13,6 +14,8 @@
 
 ## 项目亮点
 
+- **分区清晰的终端仪表盘。** 读写概览、会话统计、可滚动明细、采集健康状态
+  和快捷键分开显示，减少拥挤；终端变窄时自动精简列，支持关闭颜色。
 - **按客户端定位共享存储 I/O。** 查看完成的读写数据量，包括服务端缓存命中
   的读取；支持 RDMA、TCP、UDP，客户端 IP/CIDR、服务端网卡本机地址筛选，
   以及客户端、服务端、文件、UID、GID 分组。
@@ -27,16 +30,34 @@
 
 ## 安装与运行
 
-在 **NFS 服务端** 下载并解压 `norma-vX.Y.Z-linux-amd64` Release。
-包内包含 `bin/norma`、安装工具、文档和许可证。
+在 **Linux x86_64 NFS 服务端** 下载并运行安装脚本。脚本自动选取 GitHub
+最新稳定版，并在解压前校验发布包的 SHA256：
 
 ```bash
-sudo ./tools/install.sh
-sudo norma                         # 默认原生 eBPF、NFS/RDMA、客户端视图
-sudo norma --backend native        # 显式选择默认的原生后端
-sudo norma -p tcp                  # 普通 TCP NFS
-sudo norma --backend bpftrace      # 另一后端，需要 bpftrace >= 0.16
+curl -fsSL https://raw.githubusercontent.com/guixiaocai/norma/main/install.sh -o install-norma.sh
+sudo bash install-norma.sh
+norma --demo                       # 无需 root、无需 NFS，先预览界面
+sudo norma --doctor                # 只读检查部署条件
+sudo norma                         # 原生 eBPF、全部 NFS 传输、客户端视图
 ```
+
+**Rocky Linux 8.10 是本版本的主要部署目标。** 常见的 EL8 布局准备步骤、离线
+安装及排错请看 [Rocky Linux 8.10 安装指南](docs/rocky-linux-8.10.zh-CN.md)。
+安装脚本负责安装文件，不自动安装系统包、调整内核或更改 NFS 服务。
+`--doctor` 不加载 BPF，不启动采集；检查通过不等于已经完成探针挂接验证。
+
+固定版本、安装到个人目录或离线安装：
+
+```bash
+sudo bash install-norma.sh --version v0.4.0
+bash install-norma.sh --prefix "$HOME/.local"
+export PATH="$HOME/.local/bin:$PATH"
+# 离线：校验并解压 Release，进入解压后的目录，再执行：
+sudo ./tools/install.sh
+```
+
+安装到个人目录无需 root；**实际采集仍需要 BPF/探针权限**。`norma --demo`
+可由普通用户运行。原生后端运行时无需安装 Go、clang、bpftrace 或 libbpf 动态库。
 
 NFS 服务需已经运行。两种后端都要求 Linux x86_64、BPF 加载与 kprobe/返回
 探针挂接权限，以及符合要求的 NFSD 函数签名和布局数据。程序自动尝试运行时
@@ -77,7 +98,11 @@ bpftrace 后端。某后端失败后，先查看错误，再显式尝试另一�
 
 | 命令 | 含义 |
 |---|---|
-| `sudo norma` | 默认原生 eBPF、NFS/RDMA、每客户端、1 秒采样 |
+| `norma --demo` | 合成数据预览，不挂接探针、不需要 root 或 NFS |
+| `norma --demo --no-color` | 无彩色界面预览 |
+| `sudo norma --doctor` | 只读检查部署条件，必要检查不通过时返回非零状态 |
+| `sudo norma` | 默认原生 eBPF、全部 NFS 传输、每客户端、1 秒采样 |
+| `sudo norma -p rdma` | 仅监控 RDMA，保留 v0.3 之前的默认范围 |
 | `sudo norma --backend bpftrace` | 显式使用 bpftrace，其他参数通用 |
 | `sudo norma -p tcp` | 普通 TCP NFS |
 | `sudo norma -i eno2` | 默认选择 TCP NFS，按 eno2 的本机 IP 筛选 |
@@ -92,10 +117,24 @@ bpftrace 后端。某后端失败后，先查看错误，再显式尝试另一�
 | `sudo norma --json -s 60` | JSON Lines，包含字节、B/s、操作计数与 ops/s |
 
 `-i` 按网卡的本机 IP 筛选 NFS 服务请求，并非抓取该网卡上所有协议的流量。
-省略参数默认 RDMA；`-i` 且未指定 `-p` 时选择 TCP。普通 NFS 即使通过
+省略参数默认 `all`；`-i` 且未指定 `-p` 时选择 TCP。显式 `-p` 优先。
+普通 NFS 即使通过
 IPoIB 传输，仍应选 TCP。
 
+**从 v0.3 升级：** 默认传输由 RDMA 改为 `all`。如果原来的脚本只应采集 RDMA，
+请补上 `-p rdma`。
+
 ## 界面与统计
+
+![norma 终端仪表盘，使用合成演示数据](docs/images/dashboard.png)
+
+*由真实终端界面渲染的合成数据演示图，仅用于展示布局，不是生产 NFS 服务端的
+实测数据。*
+
+界面分为运行信息、读写概览、会话累计、客户端明细、采集健康状态及快捷键区域。
+窄终端会自动精简列；至少 120 列宽度可同时查看完整滚动统计。`--no-color` 或
+非空的 `NO_COLOR` 环境变量关闭颜色。日志采集、自动化和不适合交互界面的终端可使用
+普通文本或 JSON 模式。
 
 默认每个客户端显示 READ、WRITE 两行：READ 表示客户端从服务端读取，
 WRITE 表示客户端写入服务端。
@@ -106,7 +145,7 @@ WRITE 表示客户端写入服务端。
 | AVG 1m | 已观察的过去 1 分钟平均速度，包含无 I/O 的时间 |
 | AVG 5m | 可配置窗口平均速度，`-w` 最大支持 24 小时 |
 | PEAK 5m | 同一窗口中最高的单次采样速度 |
-| TOTAL | 从本次启动起累计完成的数据量 |
+| SESSION / TOTAL | 从本次启动起累计完成的数据量；仪表盘显示为 `SESSION`，文本输出为 `TOTAL` |
 
 均值按实际时间加权。刚启动未满窗口时只除以已观察的时间，不假装已有完整
 历史。峰值是采样峰值，不是瞬时硬件峰值。指标定义见 [metrics](docs/metrics.md)。
@@ -129,7 +168,7 @@ BPF 源码时无需安装 clang：
 ```bash
 make build
 ./bin/norma --version
-make release VERSION=v0.3.0        # 打包还需 tar、zip
+make release VERSION=v0.4.0        # 打包还需 tar、zip
 ```
 
 `make`/`make build` 只生成 **`bin/norma`**，一个静态 Go 可执行文件内包含两种

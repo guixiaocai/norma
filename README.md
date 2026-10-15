@@ -6,7 +6,8 @@
 
 See which clients are reading or writing, compare bursts with rolling averages,
 and inspect shared-storage workloads directly from your terminal. The name
-comes from **NFS over RDMA**, the default transport; TCP and UDP are also supported.
+comes from **NFS over RDMA**. By default it monitors **all supported NFS
+transports** (RDMA, TCP and UDP), so ordinary TCP servers work without extra flags.
 
 `norma` is one executable with two collectors: embedded **native eBPF** by
 default, or **bpftrace** selected with `--backend bpftrace`. Both measure
@@ -15,6 +16,9 @@ display and metric definitions.
 
 ## Why use it?
 
+- **A spacious terminal dashboard.** Separate read/write summaries, session
+  statistics, a scrollable detail table, collector health and keyboard controls
+  make the display easier to scan. The layout adapts to the terminal width.
 - **Per-client visibility, including server-cache reads.** Attribute completed
   NFS reads and writes to clients across RDMA, TCP and UDP. Filter by client
   IP/CIDR or server-interface address, and group by client, server, file, UID or GID.
@@ -33,17 +37,38 @@ display and metric definitions.
 
 ## Quick start
 
-Download and unpack a `norma-vX.Y.Z-linux-amd64` release archive on the NFS server:
+On a **Linux x86_64 NFS server**, download and run the installer. It selects the
+latest stable GitHub release and verifies the archive against its published SHA256 sum:
 
 ```bash
-sudo ./tools/install.sh
-sudo norma                         # native eBPF, NFS/RDMA, client view
-sudo norma --backend native        # explicit selection of the default backend
-sudo norma -p tcp                  # ordinary TCP NFS
-sudo norma --backend bpftrace      # alternative; needs bpftrace >= 0.16
+curl -fsSL https://raw.githubusercontent.com/guixiaocai/norma/main/install.sh -o install-norma.sh
+sudo bash install-norma.sh
+norma --demo                       # preview the dashboard; no root or NFS needed
+sudo norma --doctor                # read-only deployment checks
+sudo norma                         # native eBPF, all NFS transports, client view
 ```
 
-The NFS server must already be running. Both backends require Linux x86_64,
+**Rocky Linux 8.10 is the primary deployment target.** See the
+[Rocky Linux 8.10 installation guide](docs/rocky-linux-8.10.md) for the common
+EL8 layout-preparation step, offline installation and troubleshooting. The
+installer installs files; `--doctor` reports prerequisites without loading BPF
+or changing the NFS service. Passing these checks is not a live probe test.
+
+For a pinned version, a user-owned prefix or a downloaded release archive:
+
+```bash
+sudo bash install-norma.sh --version v0.4.0
+bash install-norma.sh --prefix "$HOME/.local"
+export PATH="$HOME/.local/bin:$PATH"
+# Offline: unpack a verified release archive, enter its directory, then:
+sudo ./tools/install.sh
+```
+
+Installing in a user-owned directory needs no root; **live collection still
+needs BPF/probe permissions**. Preview with `norma --demo` works unprivileged.
+Native collection needs no installed Go, clang, bpftrace or libbpf shared library.
+
+For live collection, the NFS server must already be running. Both backends require
 permission to load BPF and attach kprobes/return probes, and compatible NFSD
 function signatures and layout metadata. Runtime BTF is tried automatically;
 if it cannot describe the required probes, use a reviewed matching layout:
@@ -86,6 +111,10 @@ peak timing becomes less precise. See [architecture](docs/architecture.md).
 ## Common commands
 
 ```bash
+norma --demo                       # synthetic dashboard; no collector attached
+norma --demo --no-color            # monochrome preview
+sudo norma --doctor                # inspect requirements before collection
+sudo norma -p rdma                  # retain the pre-v0.4 RDMA-only behavior
 sudo norma -i eno2                 # TCP NFS to eno2's local IP addresses
 sudo norma -p rdma -i ib0           # RDMA NFS to ib0's local IP addresses
 sudo norma -p all -F 40.0.0.0/16   # all transports, selected client network
@@ -100,7 +129,24 @@ sudo norma --json -s 60            # JSON Lines with byte/operation metrics
 packet ingress. It selects TCP when `-p` is omitted. These probes monitor NFS
 server I/O; they do not monitor every protocol on the interface.
 
+**Upgrading from v0.3:** the transport default changed from RDMA to `all`.
+Set `-p rdma` in existing commands when RDMA-only collection is required.
+An explicit `-p` takes precedence over the interface shortcut.
+
 ## Display and controls
+
+![norma dashboard with synthetic demonstration data](docs/images/dashboard.png)
+
+*Actual terminal dashboard rendered with synthetic demo data. These values are
+an interface preview, not measurements from a production NFS server.*
+
+The dashboard separates connection/context information, read and write rates,
+session totals, per-client details, collector health and keyboard controls into
+distinct areas. Narrow terminals show a compact selection of columns; widen the
+terminal to compare the full rolling statistics; at least 120 columns exposes
+every metric column. `--no-color` or a nonempty `NO_COLOR` environment variable
+disables color. Text and JSON modes remain available for
+logging, automation and terminals where an interactive dashboard is unsuitable.
 
 Each client has READ and WRITE rows: READ is a client reading from this server;
 WRITE is a client writing to it.
@@ -111,7 +157,7 @@ WRITE is a client writing to it.
 | AVG 1m | Time-weighted average over the observed last minute, including idle time |
 | AVG 5m | Time-weighted average over the configurable window (`-w`, up to 24 hours) |
 | PEAK 5m | Highest individual sample rate in that window |
-| TOTAL | Successfully completed bytes since this monitor started |
+| SESSION / TOTAL | Successfully completed bytes since this monitor started (`SESSION` in the dashboard, `TOTAL` in text output) |
 
 Before a full window has elapsed, averages use only observed time. Peak is a
 sample peak, not an instantaneous hardware peak. See [metrics](docs/metrics.md).
@@ -144,7 +190,7 @@ BPF object, so no clang installation is needed unless you change BPF source.
 ```bash
 make build
 ./bin/norma --version
-make release VERSION=v0.3.0        # packaging also needs tar and zip
+make release VERSION=v0.4.0        # packaging also needs tar and zip
 ```
 
 `make`/`make build` produce **`bin/norma`**. Both collectors are included in this

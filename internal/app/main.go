@@ -34,13 +34,21 @@ func entry(name string, open Factory) error {
 	if err != nil || o.Help || o.Version {
 		return err
 	}
+	if o.Doctor {
+		return Doctor(o, os.Stdout)
+	}
+	if o.Demo {
+		src := newDemoSource()
+		defer src.Close()
+		return Run(name, o, src)
+	}
 	l, err := layout.Resolve(o.Layout)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w\nRun sudo %s --doctor for prerequisites and next steps, or %s --demo to preview the interface", err, name, name)
 	}
 	src, err := open(l, o)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w\nRun sudo %s --doctor to inspect host prerequisites; see docs/rocky-linux-8.10.md", err, name)
 	}
 	defer src.Close() // Runs after normal exit, errors and terminal restoration.
 	return Run(name, o, src)

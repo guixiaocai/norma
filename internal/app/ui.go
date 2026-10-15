@@ -30,7 +30,7 @@ type model struct {
 	history                          *History
 	name                             string
 	width, height, offset, direction int
-	frozen                           string
+	frozen                           *History
 	paused                           bool
 	err                              error
 	resolver                         *resolver
@@ -72,7 +72,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.direction = (m.direction + 1) % 4
 		case "p":
 			if !m.paused {
-				m.frozen = m.render()
+				m.frozen = cloneHistory(m.history)
 			}
 			m.paused = !m.paused
 		case "up", "k":
@@ -80,20 +80,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			m.offset++
 		case "pgdown":
-			m.offset += max(1, (m.height-9)/2)
+			m.offset += max(1, m.pageSize())
 		case "pgup":
-			m.offset = max(0, m.offset-max(1, (m.height-9)/2))
+			m.offset = max(0, m.offset-max(1, m.pageSize()))
 		}
 	}
+	history := m.history
+	if m.paused && m.frozen != nil {
+		history = m.frozen
+	}
+	m.offset = min(m.offset, max(0, len(history.Entities)-max(1, m.pageSize())))
 	return m, nil
 }
 func (m model) View() string {
-	if m.paused {
-		lines := strings.Split(m.frozen, "\n")
-		if len(lines) > 0 {
-			lines[0] = ansi.Truncate("PAUSED (sampling continues) | "+lines[0], max(1, m.width), "")
-		}
-		return strings.Join(lines, "\n")
+	if m.paused && m.frozen != nil {
+		m.history = m.frozen
 	}
 	return m.render()
 }
@@ -102,53 +103,6 @@ func windowLabel(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d/time.Minute))
 	}
 	return d.String()
-}
-func (m model) render() string {
-	w := m.width
-	if w <= 0 {
-		w = 100
-	}
-	h := m.height
-	if h <= 0 {
-		h = 25
-	}
-	var b strings.Builder
-	iface := ""
-	if m.opts.Interface != "" {
-		iface = " local=" + m.opts.Interface
-	}
-	fmt.Fprintf(&b, "%s %s | NFS/%s%s | %s | %s | sort=%s\n", m.name, Version, m.opts.Transport, iface, m.opts.Group, m.history.Last.Format("15:04:05"), m.opts.Sort)
-	fmt.Fprintf(&b, "%-*s %-5s %12s %12s %12s %12s %12s\n", max(18, w-75), "CLIENT / ENTITY", "DIR", "NOW", "AVG 1m", "AVG "+windowLabel(m.opts.Window), "PEAK "+windowLabel(m.opts.Window), "TOTAL")
-	rows := m.history.Rows(m.opts.Sort)
-	linesPer := 2
-	if m.direction != 0 {
-		linesPer = 1
-	}
-	room := max(0, (h-10)/linesPer)
-	offset := min(m.offset, max(0, len(rows)-max(1, room)))
-	end := min(len(rows), offset+room)
-	for _, e := range rows[offset:end] {
-		m.entity(&b, e, w)
-	}
-	if len(rows) == 0 {
-		b.WriteString("Waiting for matching NFS server read/write completions...\n")
-	}
-	fmt.Fprintf(&b, "%d clients/entities | showing %d-%d | observed %.0fs of %s window\n", len(rows), min(len(rows), offset+1), end, min(m.history.Last.Sub(m.history.Start).Seconds(), m.opts.Window.Seconds()), windowLabel(m.opts.Window))
-	m.entity(&b, m.history.Total, w)
-	fmt.Fprintf(&b, "PEAK: maximum %.3fs sample in window; averages include idle time. READ/WRITE are client directions.\n", m.opts.Interval.Seconds())
-	if m.history.Health != "" {
-		fmt.Fprintf(&b, "Health: %s\n", m.history.Health)
-	}
-	b.WriteString("q/Ctrl+C quit | B units | o ops | s sort | t directions | p pause | arrows scroll")
-	// Keep the alternate screen inside the visible terminal. No clear-scrollback escape.
-	lines := strings.Split(b.String(), "\n")
-	if len(lines) > h {
-		lines = lines[:h]
-	}
-	for i, line := range lines {
-		lines[i] = ansi.Truncate(line, w, "")
-	}
-	return strings.Join(lines, "\n")
 }
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {
@@ -160,7 +114,7 @@ func clean(s string) string {
 }
 func (m model) entity(b *strings.Builder, e *Entity, w int) {
 	label := clean(e.Label)
-	if !m.opts.Numeric {
+	if !m.opts.Numeric && m.resolver != nil {
 		label = m.resolver.label(e, m.opts.Group)
 	}
 	label = ansi.Truncate(label, max(18, w-75), "…")
@@ -295,11 +249,12 @@ func text(ctx context.Context, m *model) error {
 				output := struct {
 					Time                                          time.Time `json:"time"`
 					Transport                                     string    `json:"transport"`
+					Demo                                          bool      `json:"demo,omitempty"`
 					WindowSeconds, ObservedSeconds, SampleSeconds float64
 					Rows                                          []*Entity
 					Total                                         *Entity
 					Health                                        string
-				}{Time: s.At, Transport: m.opts.Transport, WindowSeconds: m.opts.Window.Seconds(), ObservedSeconds: min(s.At.Sub(m.history.Start).Seconds(), m.opts.Window.Seconds()), SampleSeconds: m.opts.Interval.Seconds(), Rows: rows, Total: m.history.Total, Health: s.Health}
+				}{Time: s.At, Transport: m.opts.Transport, Demo: m.opts.Demo, WindowSeconds: m.opts.Window.Seconds(), ObservedSeconds: min(s.At.Sub(m.history.Start).Seconds(), m.opts.Window.Seconds()), SampleSeconds: m.opts.Interval.Seconds(), Rows: rows, Total: m.history.Total, Health: s.Health}
 				// Segments stay private to the UI; public JSON carries summary metrics in bytes and bytes/s.
 				summaries := make([]*Entity, 0, len(output.Rows))
 				for _, e := range output.Rows {
@@ -315,6 +270,9 @@ func text(ctx context.Context, m *model) error {
 					return err
 				}
 			} else {
+				if m.opts.Demo {
+					fmt.Fprintln(os.Stdout, "DEMO — SYNTHETIC DATA (no kernel collection)")
+				}
 				fmt.Fprintf(os.Stdout, "\n%s | %s NFS/%s | observed %.1fs | window %s\n", s.At.Format(time.RFC3339), m.name, m.opts.Transport, min(s.At.Sub(m.history.Start).Seconds(), m.opts.Window.Seconds()), windowLabel(m.opts.Window))
 				fmt.Fprintf(os.Stdout, "%-35s %-5s %12s %12s %12s %12s %12s\n", "CLIENT / ENTITY", "DIR", "NOW", "AVG 1m", "AVG "+windowLabel(m.opts.Window), "PEAK "+windowLabel(m.opts.Window), "TOTAL")
 				for _, e := range rows {

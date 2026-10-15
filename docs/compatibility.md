@@ -4,6 +4,18 @@ Support depends on architecture, NFSD function semantics and accurate layout
 metadata. A distribution name or kernel version number alone does not establish
 compatibility. Build success does not establish runtime probe/workload support.
 
+The primary deployment target is **Rocky Linux 8.10 x86_64**. Follow the
+[English](rocky-linux-8.10.md) or [Chinese](rocky-linux-8.10.zh-CN.md) installation
+guide for the EL8 layout route. Other Linux x86_64 hosts can use the same
+executable when they meet this contract; this is not an all-kernel or
+all-architecture support claim.
+
+Run `sudo norma --doctor` before collection. It checks deployment prerequisites
+without loading BPF or attaching probes, reports missing requirements and
+returns nonzero on failed checks. Actual attachment, security permissions and
+workload accounting must still be verified on the intended server. To preview
+the dashboard without any NFS or probe requirements, use `norma --demo`.
+
 ## Shared requirements
 
 Both `norma` backends require:

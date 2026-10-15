@@ -18,10 +18,21 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang llvm libbpf-dev gcc make zip
       - name: Regenerate embedded BPF object
         run: ./tools/generate.sh
+      - name: Check shell scripts and installers
+        run: |
+          for script in install.sh tools/*.sh; do bash -n "$script"; done
+          ./tools/test-install.sh
       - name: Test CLI and compile norma
         run: |
           go test ./...
+          go vet ./...
           ./tools/build.sh
+          ./bin/norma --version
+          ./bin/norma --demo --no-color --json -r 250ms -s 1
+      - name: Rocky Linux 8.10 userland smoke (not kernel probe validation)
+        run: |
+          docker run --rm -v "$PWD:/work:ro" -w /work rockylinux/rockylinux:8.10 bash -c \
+            './bin/norma --version && ./bin/norma --demo --no-color --json -r 250ms -s 1'
       - uses: actions/upload-artifact@v4
         with:
           name: norma-linux-amd64

@@ -15,6 +15,12 @@ failure is returned to the user; there is no automatic switch to another backend
 | `internal/app` | Shared CLI, UI, rolling windows and output |
 | `tools` | Build, install, layout generation and release packaging |
 
+`--doctor` runs read-only environment and layout checks before either collector
+is created. It never tests a live BPF attachment. `--demo` supplies deterministic
+synthetic cumulative snapshots to the shared frontend and never starts a real
+collector. Demo mode is labeled in the interactive display and can also exercise
+the text/JSON output paths without root or a running NFS server.
+
 ## Common collection contract
 
 Both backends attach entry and return probes to three NFSD VFS helper paths:
@@ -94,6 +100,14 @@ map-capacity losses cannot be reconstructed by the UI. Inspect tracefs
 `kprobe_profile` when investigating probe loss under high concurrency.
 
 ## Terminal lifecycle
+
+The responsive dashboard divides context, READ/WRITE/SESSION overview, entity
+details, collector health and controls into separate regions. At 120 columns
+the table shows all rate/window/peak/session columns; smaller widths reduce
+columns and then use a compact summary. Fewer than 44 columns or 14 rows uses
+an essential summary with a resize hint. The underlying metric calculations and
+JSON fields do not depend on terminal size. `--no-color` and nonempty `NO_COLOR`
+disable color without changing the interactive layout.
 
 Interactive rendering uses Bubble Tea's alternate screen and terminal mode
 restoration. No `clear`, erase-scrollback (`ESC[3J`), `stty sane`, shell-history

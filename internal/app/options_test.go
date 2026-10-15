@@ -44,7 +44,7 @@ func TestTransportPrecedence(t *testing.T) {
 		name, primary, legacy, want string
 		args                        []string
 	}{
-		{name: "default", want: "rdma"},
+		{name: "default", want: "all"},
 		{name: "norma environment", primary: "tcp", want: "tcp"},
 		{name: "legacy environment", legacy: "udp", want: "udp"},
 		{name: "norma overrides legacy", primary: "tcp", legacy: "udp", want: "tcp"},
@@ -107,5 +107,19 @@ func TestNormaHelpAndVersion(t *testing.T) {
 				t.Fatal("version flag was not set")
 			}
 		})
+	}
+}
+
+func TestOnboardingFlags(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	var out bytes.Buffer
+	o, err := Parse("norma", []string{"--demo", "-g", "files"}, &out)
+	if err != nil || !o.Demo || !o.NoColor || o.Group != "files" {
+		t.Fatalf("demo options: %+v, %v", o, err)
+	}
+	for _, args := range [][]string{{"--demo", "--doctor"}, {"--doctor", "--json"}} {
+		if _, err := Parse("norma", args, &out); err == nil {
+			t.Fatalf("accepted incompatible options %v", args)
+		}
 	}
 }

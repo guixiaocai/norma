@@ -6,6 +6,16 @@ from server to client; a WRITE accepts client content at the server.
 The collectors retain cumulative success counters and compute userspace
 differences. They do not clear live data counters at each tick.
 
+The dashboard's READ and WRITE overview cards show the selected population's
+totals; the SESSION area identifies observed time and the active view. The
+table's `SESSION` column is the same cumulative byte/operation measure previously
+labeled `TOTAL`. Compact terminal widths hide columns, not data; widen the
+terminal or use text/JSON output to inspect the complete statistics.
+
+`--demo` uses synthetic snapshots, clearly labeled in the interactive display.
+Its rates and totals demonstrate formatting and controls and must not be used
+as real workload evidence.
+
 ## Rolling averages
 
 For a segment of elapsed length `dt`, the rate is `delta_bytes / dt`. A window

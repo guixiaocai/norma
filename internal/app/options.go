@@ -13,13 +13,14 @@ import (
 	"time"
 )
 
-var Version = "v0.3.0"
+var Version = "v0.4.0"
 var Commit = "source"
 
 type Options struct {
 	Backend, Transport, Interface, Group, Layout, Sort string
 	Interval, Window, Duration                         time.Duration
 	Text, Bits, Numeric, Version, Help, JSON, Ops      bool
+	Demo, Doctor, NoColor                              bool
 	Limit                                              int
 	Filter                                             string
 	Local                                              map[netip.Addr]bool
@@ -31,11 +32,14 @@ func Parse(name string, args []string, out io.Writer) (Options, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(out)
 	fs.StringVar(&o.Backend, "backend", "native", "collector: native (default) or bpftrace")
-	fs.StringVar(&o.Transport, "p", "", "rdma (default), tcp, udp, all")
+	fs.StringVar(&o.Transport, "p", "", "all (default), rdma, tcp, udp")
 	fs.StringVar(&o.Transport, "transport", "", "transport selector")
 	fs.StringVar(&o.Interface, "i", "", "local network interface; implies TCP unless -p is supplied")
 	fs.BoolVar(&o.Text, "t", false, "text output; no terminal control")
 	fs.BoolVar(&o.JSON, "json", false, "JSON Lines output, implies -t")
+	fs.BoolVar(&o.Demo, "demo", false, "preview with synthetic data; no root or NFS server needed")
+	fs.BoolVar(&o.Doctor, "doctor", false, "check host prerequisites without loading probes")
+	fs.BoolVar(&o.NoColor, "no-color", os.Getenv("NO_COLOR") != "", "disable dashboard colors (also NO_COLOR)")
 	fs.BoolVar(&o.Numeric, "n", true, "numeric client addresses (default)")
 	names := fs.Bool("N", false, "resolve names asynchronously")
 	bytes := fs.Bool("B", false, "automatic byte/s units (default)")
@@ -56,7 +60,7 @@ func Parse(name string, args []string, out io.Writer) (Options, error) {
 	fs.Usage = func() {
 		fmt.Fprintf(out, "%s %s — NFS server I/O by client\n\nUsage: %s [options]\n\n", name, Version, name)
 		fs.PrintDefaults()
-		fmt.Fprintln(out, "\nExamples:\n  sudo "+name+"\n  sudo "+name+" --backend bpftrace\n  sudo "+name+" -p tcp\n  sudo "+name+" -i eno2 -w 10m\n  sudo "+name+" -t -s 120\n\nKeys: q/Ctrl+C quit | B bytes/bits | s sort | t read/write/both/total | p pause display | ↑/↓ scroll\nREAD = client reads from server; WRITE = client writes to server. -i filters the interface's local IPs, not packet ingress.")
+		fmt.Fprintln(out, "\nExamples:\n  "+name+" --demo\n  sudo "+name+" --doctor\n  sudo "+name+"\n  sudo "+name+" --backend bpftrace\n  sudo "+name+" -p rdma\n  sudo "+name+" -i eno2 -w 10m\n  sudo "+name+" -t -s 120\n\nKeys: q/Ctrl+C quit | B bytes/bits | o ops | s sort | t read/write/both/total | p pause display | ↑/↓ scroll\nREAD = client reads from server; WRITE = client writes to server. -i filters the interface's local IPs, not packet ingress.")
 	}
 	// Retain positional launch shortcuts without making users choose a view.
 	if len(args) > 0 && (args[0] == "clients" || args[0] == "tui" || args[0] == "simple") {
@@ -79,6 +83,12 @@ func Parse(name string, args []string, out io.Writer) (Options, error) {
 	if fs.NArg() != 0 {
 		return o, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
+	if o.Demo && o.Doctor {
+		return o, fmt.Errorf("--demo and --doctor cannot be used together")
+	}
+	if o.Doctor && o.JSON {
+		return o, fmt.Errorf("--doctor produces a readable checklist; --json is for collection")
+	}
 	switch o.Backend {
 	case "native", "bpftrace":
 	default:
@@ -98,7 +108,7 @@ func Parse(name string, args []string, out io.Writer) (Options, error) {
 		} else if env := os.Getenv("NFSMON_TRANSPORT"); env != "" {
 			o.Transport = env
 		} else {
-			o.Transport = "rdma"
+			o.Transport = "all"
 		}
 	}
 	switch o.Transport {
