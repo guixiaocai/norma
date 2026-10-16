@@ -16,6 +16,16 @@ display and metric definitions.
 
 ## Why use it?
 
+- **RPM deployment and managed upgrades.** Rocky/Alma/RHEL packages support
+  package queries, upgrades, downgrades and removal. Tar installs gain a file
+  manifest, full-version snapshots, rollback and removal with data retention.
+- **Follow an abnormal client without restarting.** Select a client and Enter
+  its files/UIDs, switch grouping and filters, compare transport channels, and
+  keep session counters. Node aliases retain their IP addresses.
+- **Helper latency and failures by client.** Inspect READ/WRITE session mean,
+  P95/P99 histogram bounds and maximum NFSD VFS helper duration, plus failures,
+  average operation size and load share. Host CPU/disk/network indicators provide
+  correlation alongside NFS-specific accounting.
 - **A spacious terminal dashboard.** Separate read/write summaries, session
   statistics, a scrollable detail table, collector health and keyboard controls
   make the display easier to scan. The layout adapts to the terminal width.
@@ -37,8 +47,20 @@ display and metric definitions.
 
 ## Quick start
 
-On a **Linux x86_64 NFS server**, download and run the installer. It selects the
-latest stable GitHub release and verifies the archive against its published SHA256 sum:
+On **Rocky/Alma/RHEL x86_64 NFS servers**, prefer the RPM from the
+[release](https://github.com/guixiaocai/norma/releases):
+
+```bash
+curl -fLO https://github.com/guixiaocai/norma/releases/download/v0.5.0/norma-0.5.0-1.el8.x86_64.rpm
+curl -fLO https://github.com/guixiaocai/norma/releases/download/v0.5.0/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+sudo dnf install ./norma-0.5.0-1.el8.x86_64.rpm
+sudo norma --doctor
+sudo norma
+```
+
+For a tar installation on Linux x86_64, the download installer selects the
+latest stable release and verifies its archive against the published SHA256 sum:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/guixiaocai/norma/main/install.sh -o install-norma.sh
@@ -49,19 +71,21 @@ sudo norma                         # native eBPF, all NFS transports, client vie
 ```
 
 **Rocky Linux 8.10 is the primary deployment target.** See the
-[Rocky Linux 8.10 installation guide](docs/rocky-linux-8.10.md) for the common
-EL8 layout-preparation step, offline installation and troubleshooting. The
+[deployment and live investigation guide](docs/operations.md) for EL8 layout
+preparation, offline installation, RPM/tar lifecycle, configuration and troubleshooting. The
 installer installs files; `--doctor` reports prerequisites without loading BPF
 or changing the NFS service. Passing these checks is not a live probe test.
 
 For a pinned version, a user-owned prefix or a downloaded release archive:
 
 ```bash
-sudo bash install-norma.sh --version v0.4.0
+sudo bash install-norma.sh --version v0.5.0
 bash install-norma.sh --prefix "$HOME/.local"
 export PATH="$HOME/.local/bin:$PATH"
 # Offline: unpack a verified release archive, enter its directory, then:
 sudo ./tools/install.sh
+# One-time migration of a pre-manifest v0.4 tar installation:
+sudo ./tools/install.sh --adopt-legacy
 ```
 
 Installing in a user-owned directory needs no root; **live collection still
@@ -120,6 +144,9 @@ sudo norma -p rdma -i ib0           # RDMA NFS to ib0's local IP addresses
 sudo norma -p all -F 40.0.0.0/16   # all transports, selected client network
 sudo norma -w 10m -b               # 1m/10m averages, 10m peak, bit/s
 sudo norma -g files                # per-file accounting
+sudo norma -g transports           # distinct RDMA/TCP/UDP accounting
+sudo norma --config examples/nodes.json -g nodegroups
+sudo norma -g files --file-filter dataset
 sudo norma --backend bpftrace -g users -p tcp
 sudo norma -t -s 120               # plain text for two minutes
 sudo norma --json -s 60            # JSON Lines with byte/operation metrics
@@ -137,8 +164,44 @@ An explicit `-p` takes precedence over the interface shortcut.
 
 ![norma dashboard with synthetic demonstration data](docs/images/dashboard.png)
 
-*Actual terminal dashboard rendered with synthetic demo data. These values are
-an interface preview, not measurements from a production NFS server.*
+*All screenshots in this section come from the actual terminal renderer with
+synthetic demo data, not production NFS measurements. Expand a view to inspect it.*
+
+<details>
+<summary>Client file details — Enter</summary>
+
+![Selected-client file details with synthetic demo data](docs/images/dashboard-files.png)
+
+Select a client and press Enter to inspect its files; Esc returns to the client list.
+
+</details>
+
+<details>
+<summary>Selected-client UID details — u</summary>
+
+![Selected-client UID details with synthetic demo data](docs/images/dashboard-users.png)
+
+Inside a client detail, `u` switches between files and UIDs; Esc returns.
+
+</details>
+
+<details>
+<summary>Transport comparison — g / T</summary>
+
+![Transport comparison with synthetic demo data](docs/images/dashboard-transports.png)
+
+Use `g` to reach transport grouping, `T` to select a transport view, and Enter to expand a transport's clients.
+
+</details>
+
+<details>
+<summary>Compact diagnostics at 80 × 24 — d</summary>
+
+![Compact selected-entity diagnostics with synthetic demo data](docs/images/dashboard-diagnostics.png)
+
+Press `d` to open diagnostics for the selected entity on a compact terminal; `d` or Esc returns.
+
+</details>
 
 The dashboard separates connection/context information, read and write rates,
 session totals, per-client details, collector health and keyboard controls into
@@ -171,6 +234,18 @@ sample peak, not an instantaneous hardware peak. See [metrics](docs/metrics.md).
 | `t` | Both directions, read, write, combined |
 | `p` | Freeze the display; collection and rolling windows continue |
 | Up/Down, j/k, Page Up/Down | Scroll |
+| Enter, Esc | Drill into the selected client/transport, then return |
+| `u` | Toggle files/UIDs inside a client detail |
+| `g` | Cycle grouping without resetting session attribution |
+| `/`, Enter | Apply IP/CIDR or `file=substring` filter; Esc clears/cancels |
+| `T` | Cycle all/TCP/RDMA/UDP without detaching probes |
+| `d` | Open a selected-entity diagnostics page, including on compact terminals |
+
+Sorting follows the active byte/operation metric and READ/WRITE/combined view.
+The selected-entity panel adds session average operation sizes, current rate
+share, first observed activity and endpoint helper diagnostics. Percentiles are
+histogram upper bounds; helper durations include failed calls and are separate
+from rolling throughput windows. Read the [measurement boundaries](docs/operations.md#read-slow-operation-diagnostics-correctly).
 
 Redirection and `-t` produce append-only text without terminal escape sequences.
 Optional `-N` name lookup runs asynchronously; addresses are numeric by default.
@@ -190,7 +265,8 @@ BPF object, so no clang installation is needed unless you change BPF source.
 ```bash
 make build
 ./bin/norma --version
-make release VERSION=v0.4.0        # packaging also needs tar and zip
+make release VERSION=v0.5.0        # tar/zip packages
+make rpm VERSION=v0.5.0            # additionally requires rpmbuild
 ```
 
 `make`/`make build` produce **`bin/norma`**. Both collectors are included in this
@@ -207,7 +283,7 @@ make generate
 make build
 ```
 
-GitHub Actions builds Linux amd64 tar/zip archives and SHA256 checksums from a
+GitHub Actions builds Linux amd64 RPM/tar/zip packages and SHA256 checksums from a
 version tag. See [publishing](docs/publishing.md). Build and CLI checks do not
 establish probe correctness on every kernel. NFSD attachment, workload accounting
 and cross-kernel runtime validation must be performed on the intended server.

@@ -148,6 +148,8 @@ func (s *Source) consume(reader io.Reader) {
 	scanner.Buffer(make([]byte, 65536), 4<<20)
 	active := false
 	records := map[string]*collect.Record{}
+	clients := map[string]*collect.Record{}
+	diagnostics := map[string]*collect.Diagnostic{}
 	health := map[string]uint64{}
 	var parseErr error
 	for scanner.Scan() {
@@ -155,6 +157,8 @@ func (s *Source) consume(reader io.Reader) {
 		if line == "NFSMON_BEGIN" {
 			active = true
 			records = map[string]*collect.Record{}
+			clients = map[string]*collect.Record{}
+			diagnostics = map[string]*collect.Diagnostic{}
 			health = map[string]uint64{}
 			continue
 		}
@@ -163,9 +167,16 @@ func (s *Source) consume(reader io.Reader) {
 			for _, r := range records {
 				snap.Records = append(snap.Records, *r)
 			}
-			if health["failed"]+health["overwritten"] > 0 {
-				snap.Health = fmt.Sprintf("failed_ops=%d missed_or_overwritten=%d; inspect tracefs kprobe_profile for missed returns", health["failed"], health["overwritten"])
+			for _, r := range clients {
+				snap.Clients = append(snap.Clients, *r)
 			}
+			for _, d := range diagnostics {
+				snap.Diagnostics = append(snap.Diagnostics, *d)
+			}
+			if health["failed"]+health["overwritten"]+health["badreads"] > 0 {
+				snap.Health = fmt.Sprintf("failed_ops=%d missed_or_overwritten=%d missing_detail_or_count=%d; inspect tracefs kprobe_profile for missed returns", health["failed"], health["overwritten"], health["badreads"])
+			}
+			snap.CheckDiagnosticHealth()
 			if !s.deliver(frame{snapshot: snap, err: parseErr}) {
 				break
 			}
@@ -175,7 +186,7 @@ func (s *Source) consume(reader io.Reader) {
 		if !active || !strings.HasPrefix(line, "@") {
 			continue
 		}
-		if err := parseLine(line, records, health); err != nil {
+		if err := parseLine(line, records, clients, diagnostics, health); err != nil {
 			parseErr = err
 		}
 	}
@@ -198,8 +209,8 @@ func (s *Source) consume(reader io.Reader) {
 		s.deliver(frame{err: fmt.Errorf("bpftrace: %w\n%s", err, s.stderr.String())})
 	}
 }
-func parseLine(line string, records map[string]*collect.Record, health map[string]uint64) error {
-	for _, name := range []string{"failed", "overwritten"} {
+func parseLine(line string, records, clients map[string]*collect.Record, diagnostics map[string]*collect.Diagnostic, health map[string]uint64) error {
+	for _, name := range []string{"failed", "overwritten", "badreads"} {
 		prefix := "@" + name + ": "
 		if strings.HasPrefix(line, prefix) {
 			n, e := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(line, prefix)), 10, 64)
@@ -219,7 +230,7 @@ func parseLine(line string, records map[string]*collect.Record, health map[strin
 		return nil
 	}
 	switch name {
-	case "@rb", "@wb", "@ro", "@wo":
+	case "@rb", "@wb", "@ro", "@wo", "@crb", "@cwb", "@cro", "@cwo", "@dc", "@de", "@dn", "@dm", "@dh":
 	default:
 		return nil
 	}
@@ -227,13 +238,21 @@ func parseLine(line string, records map[string]*collect.Record, health map[strin
 	if err != nil {
 		return err
 	}
+	fields := strings.Split(key, ",")
+	for i := range fields {
+		fields[i] = strings.TrimSpace(fields[i])
+	}
+	if strings.HasPrefix(name, "@d") {
+		return parseDiagnostic(name, fields, n, diagnostics)
+	}
+	if strings.HasPrefix(name, "@c") {
+		records = clients
+		name = "@" + strings.TrimPrefix(name, "@c")
+	}
+	key = strings.Join(fields, ",")
 	r := records[key]
 	if r == nil {
-		fields := strings.Split(key, ",")
-		for i := range fields {
-			fields[i] = strings.TrimSpace(fields[i])
-		}
-		if len(fields) != 2 && len(fields) != 6 {
+		if len(fields) != 3 && len(fields) != 7 {
 			return fmt.Errorf("unexpected bpftrace key: %s", key)
 		}
 		c, err := netip.ParseAddr(fields[0])
@@ -244,15 +263,19 @@ func parseLine(line string, records map[string]*collect.Record, health map[strin
 		if err != nil {
 			return err
 		}
-		r = &collect.Record{Client: c.Unmap(), Server: server.Unmap()}
-		if len(fields) == 6 {
+		transport, err := strconv.ParseUint(fields[2], 10, 32)
+		if err != nil {
+			return err
+		}
+		r = &collect.Record{Client: c.Unmap(), Server: server.Unmap(), Transport: uint32(transport)}
+		if len(fields) == 7 {
 			vals := make([]uint64, 4)
 			for i := range vals {
 				bits := 32
 				if i == 3 {
 					bits = 64
 				}
-				n, e := strconv.ParseUint(fields[i+2], 10, bits)
+				n, e := strconv.ParseUint(fields[i+3], 10, bits)
 				if e != nil {
 					return e
 				}
@@ -274,6 +297,59 @@ func parseLine(line string, records map[string]*collect.Record, health map[strin
 		r.Counters.ReadOps = n
 	case "@wo":
 		r.Counters.WriteOps = n
+	}
+	return nil
+}
+
+func parseDiagnostic(name string, fields []string, n uint64, diagnostics map[string]*collect.Diagnostic) error {
+	want := 4
+	if name == "@dh" {
+		want = 5
+	}
+	if len(fields) != want {
+		return fmt.Errorf("unexpected diagnostic key: %v", fields)
+	}
+	client, err := netip.ParseAddr(fields[0])
+	if err != nil {
+		return err
+	}
+	server, err := netip.ParseAddr(fields[1])
+	if err != nil {
+		return err
+	}
+	proto, err := strconv.ParseUint(fields[2], 10, 32)
+	if err != nil {
+		return err
+	}
+	direction, err := strconv.ParseUint(fields[3], 10, 1)
+	if err != nil {
+		return err
+	}
+	key := strings.Join(fields[:3], ",")
+	d := diagnostics[key]
+	if d == nil {
+		d = &collect.Diagnostic{Client: client.Unmap(), Server: server.Unmap(), Transport: uint32(proto)}
+		diagnostics[key] = d
+	}
+	op := &d.Read
+	if direction != 0 {
+		op = &d.Write
+	}
+	switch name {
+	case "@dc":
+		op.Calls = n
+	case "@de":
+		op.Errors = n
+	case "@dn":
+		op.TotalNS = n
+	case "@dm":
+		op.MaxNS = n
+	case "@dh":
+		bucket, err := strconv.ParseUint(fields[4], 10, 5)
+		if err != nil {
+			return err
+		}
+		op.Buckets[bucket] = n
 	}
 	return nil
 }

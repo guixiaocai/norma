@@ -48,7 +48,7 @@ func entry(name string, open Factory) error {
 	}
 	src, err := open(l, o)
 	if err != nil {
-		return fmt.Errorf("%w\nRun sudo %s --doctor to inspect host prerequisites; see docs/rocky-linux-8.10.md", err, name)
+		return fmt.Errorf("%w\nRun sudo %s --doctor to inspect host prerequisites; see docs/operations.md", err, name)
 	}
 	defer src.Close() // Runs after normal exit, errors and terminal restoration.
 	return Run(name, o, src)

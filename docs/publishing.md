@@ -8,12 +8,13 @@ Upstream ownership notices must remain intact.
 ## Build a release
 
 Ordinary builds use the checked-in BPF object and require Go >= 1.25.3 and make.
-Release packaging also needs tar and zip:
+Release archives need tar/zip; RPM packaging additionally needs rpmbuild:
 
 ```bash
 make build
 ./bin/norma --version
-make release VERSION=v0.4.0
+make release VERSION=v0.5.0
+make rpm VERSION=v0.5.0
 ```
 
 There is one static Go executable, **`bin/norma`**, containing both collectors.
@@ -27,13 +28,13 @@ the source. This step belongs on the build machine.
 
 ## Publish a version tag
 
-Update `CHANGELOG.md`, `docs/release-notes.md` and the default version, then
+Update `CHANGELOG.md` and the default version, then
 commit the completed changes and push the branch. Create a new version tag;
 existing published tags must continue to identify their original source.
 
 ```bash
-git tag -a v0.4.0 -m "norma v0.4.0"
-git push origin v0.4.0
+git tag -a v0.5.0 -m "norma v0.5.0"
+git push origin v0.5.0
 ```
 
 `.github/workflows/release.yml` regenerates BPF, runs Go checks and builds the
@@ -42,11 +43,16 @@ CLI and `GITHUB_TOKEN`. Repository Actions and the release job's
 `contents: write` permission must be enabled. No personal access token or
 username is embedded in the project.
 
+Release descriptions are generated from the newest version section of
+`CHANGELOG.md`, followed by the dashboard image and guide links. There is no
+separate release-notes file to keep in sync.
+
 Release assets:
 
-- `norma-v0.4.0-linux-amd64.tar.gz`
-- `norma-v0.4.0-linux-amd64.zip`
-- `SHA256SUMS`
+- `norma-v0.5.0-linux-amd64.tar.gz`
+- `norma-v0.5.0-linux-amd64.zip`
+- `norma-0.5.0-1.el8.x86_64.rpm`
+- `SHA256SUMS` (RPM and both archives)
 - GitHub's source snapshots for the tag.
 
 Archives contain `bin/norma`, runtime tools, documentation and licenses.
@@ -71,6 +77,21 @@ To regenerate the documented 140 × 40 dashboard from its deterministic fixture:
 NORMA_SCREENSHOT=/tmp/norma.ansi go test ./internal/app -run TestDashboardScreenshot -count=1
 python3 tools/render-screenshot.py /tmp/norma.ansi docs/images/dashboard.png
 ```
+
+The README's additional views use the same renderer and key handling. Export
+and render each variant after changing the dashboard:
+
+```bash
+for view in files users transports diagnostics; do
+  NORMA_SCREENSHOT_VIEW="$view" NORMA_SCREENSHOT="/tmp/norma-$view.ansi" \
+    go test ./internal/app -run '^TestDashboardScreenshot$' -count=1
+  python3 tools/render-screenshot.py "/tmp/norma-$view.ansi" "docs/images/dashboard-$view.png"
+done
+```
+
+File/UID screenshots split synthetic per-sample attribution across several
+files/users while conserving the original client totals. The compact diagnostic
+view uses 80 × 24 cells; all other gallery views use 140 × 40.
 
 Image rendering needs Python with Pillow and the DejaVu Sans Mono font on the
 documentation machine; these are not norma runtime requirements. Visually check
@@ -100,3 +121,16 @@ near the top. Set description/topics in the repository's About panel.
 References: [GitHub Go workflows](https://docs.github.com/en/actions/tutorials/build-and-test-code/go),
 [gh release create](https://cli.github.com/manual/gh_release_create),
 [GitHub repository topics](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/classifying-your-repository-with-topics).
+
+## v0.5 deployment validation
+
+The release workflow validates shell lifecycle/offline bundle tests, Go tests and
+vet, generated BPF compilation, and bpftrace debug compilation without attaching
+probes. Rocky 8.10 container checks cover RPM installation/query, upgrade,
+downgrade and removal plus demo output. These are userland/package checks;
+container kernels are not Rocky NFSD runtime validation.
+
+Build the RPM with `make rpm VERSION=v0.5.0`. Keep its `.el8.x86_64.rpm` name
+stable for offline bundles. The RPM file manifest is authoritative for package
+removal; tar installs maintain their own manifest and saved full payloads.
+See [operations](operations.md) for both management paths and legacy migration.

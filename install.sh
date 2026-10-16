@@ -7,11 +7,12 @@ usage() {
     cat <<'EOF'
 Install norma for Linux x86_64 from an official GitHub release.
 
-Usage: bash install.sh [--version v0.4.0] [--prefix /usr/local] [--prepare-layout]
+Usage: bash install.sh [--version v0.5.0] [--prefix /usr/local] [--prepare-layout] [--adopt-legacy]
 
   --version VERSION  Release tag, or "latest" (default: latest stable release)
   --prefix PATH      Absolute installation prefix (default: PREFIX or /usr/local)
   --prepare-layout   Explicitly run the EL8 header layout helper after installation
+  --adopt-legacy     Back up/import a v0.4 tar installation without a manifest
   -h, --help         Show this help
 
 Requires curl or wget, tar and sha256sum. Downloads are HTTPS-only and the
@@ -25,6 +26,7 @@ fail() { printf 'norma installer: %s\n' "$*" >&2; exit 1; }
 norma_version=latest
 norma_prefix=${PREFIX:-/usr/local}
 norma_prepare=false
+norma_adopt=false
 while (($#)); do
     case "$1" in
         --version|--prefix)
@@ -32,6 +34,7 @@ while (($#)); do
             if [[ $1 == --version ]]; then norma_version=$2; else norma_prefix=$2; fi
             shift 2 ;;
         --prepare-layout) norma_prepare=true; shift ;;
+        --adopt-legacy) norma_adopt=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) fail "Unknown option: $1. See --help." ;;
     esac
@@ -61,11 +64,11 @@ norma_repository=https://github.com/guixiaocai/norma
 if [[ $norma_version == latest ]]; then
     printf 'Finding the latest norma release...\n'
     download 'https://api.github.com/repos/guixiaocai/norma/releases/latest' "$norma_tmp/release.json" ||
-        fail 'Cannot find the latest release. Check network access or specify --version v0.4.0.'
+        fail 'Cannot find the latest release. Check network access or specify --version v0.5.0.'
     norma_version=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$norma_tmp/release.json")
 fi
 [[ $norma_version =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9._-]+)?$ ]] ||
-    fail 'Invalid release tag. Expected v0.4.0 or latest.'
+    fail 'Invalid release tag. Expected v0.5.0 or latest.'
 norma_name="norma-$norma_version-linux-amd64"
 norma_asset="$norma_name.tar.gz"
 norma_url="$norma_repository/releases/download/$norma_version"
@@ -92,8 +95,14 @@ awk 'substr($0, 1, 1) != "-" && substr($0, 1, 1) != "d" { bad = 1 } END { exit b
 tar --extract --gzip --file "$norma_tmp/$norma_asset" --directory "$norma_tmp" \
     --no-same-owner --no-same-permissions
 [[ -f $norma_tmp/$norma_name/tools/install.sh ]] || fail 'Release archive is missing tools/install.sh.'
+if [[ ! -f $norma_tmp/$norma_name/tools/lifecycle.sh ]] &&
+   { $norma_adopt || [[ -f ${DESTDIR:-}$norma_prefix/share/norma/.install/manifest.tsv ]]; }; then
+    fail 'This older release has no managed installer. Use norma-manage rollback or extract it separately; existing managed files were not changed.'
+fi
 # PREFIX also works with older release installers that predate CLI flags.
-PREFIX="$norma_prefix" bash "$norma_tmp/$norma_name/tools/install.sh"
+norma_args=()
+if $norma_adopt; then norma_args+=(--adopt-legacy); fi
+PREFIX="$norma_prefix" bash "$norma_tmp/$norma_name/tools/install.sh" "${norma_args[@]}"
 if $norma_prepare; then
     printf 'Preparing the EL8 layout using the running kernel headers...\n'
     if ! NORMA_BIN="$norma_prefix/bin/norma" "$norma_prefix/share/norma/tools/prepare-layout.sh"; then

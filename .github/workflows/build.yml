@@ -15,13 +15,14 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Build dependencies
-        run: sudo apt-get update && sudo apt-get install -y clang llvm libbpf-dev gcc make zip
+        run: sudo apt-get update && sudo apt-get install -y clang llvm libbpf-dev gcc make zip bpftrace
       - name: Regenerate embedded BPF object
         run: ./tools/generate.sh
       - name: Check shell scripts and installers
         run: |
           for script in install.sh tools/*.sh; do bash -n "$script"; done
           ./tools/test-install.sh
+          ./tools/test-lifecycle.sh
       - name: Test CLI and compile norma
         run: |
           go test ./...
@@ -29,11 +30,21 @@ jobs:
           ./tools/build.sh
           ./bin/norma --version
           ./bin/norma --demo --no-color --json -r 250ms -s 1
-      - name: Rocky Linux 8.10 userland smoke (not kernel probe validation)
+          ./tools/package.sh
+      - name: Validate generated bpftrace script without loading probes
         run: |
-          docker run --rm -v "$PWD:/work:ro" -w /work rockylinux/rockylinux:8.10 bash -c \
-            './bin/norma --version && ./bin/norma --demo --no-color --json -r 250ms -s 1'
+          NORMA_BPFTRACE_SCRIPT=/tmp/norma-collector.bt go test ./internal/trace -run TestScriptRetainsAllDetailsAndTimingOnFailure -count=1
+          if ! sudo bpftrace -d /tmp/norma-collector.bt > /tmp/norma-bpftrace-debug.log 2>&1; then
+            cat /tmp/norma-bpftrace-debug.log
+            exit 1
+          fi
+      - name: Build RPM and test Rocky Linux 8.10 package lifecycle
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work -e NORMA_RPM_TEST_CONTAINER=1 rockylinux/rockylinux:8.10 bash -c \
+            'dnf -y install rpm-build tar gzip && ./tools/package-rpm.sh && ./tools/test-rpm.sh dist/norma-0.5.0-1.el8.x86_64.rpm'
       - uses: actions/upload-artifact@v4
         with:
           name: norma-linux-amd64
-          path: bin/
+          path: |
+            bin/
+            dist/

@@ -5,7 +5,7 @@ metadata. A distribution name or kernel version number alone does not establish
 compatibility. Build success does not establish runtime probe/workload support.
 
 The primary deployment target is **Rocky Linux 8.10 x86_64**. Follow the
-[English](rocky-linux-8.10.md) or [Chinese](rocky-linux-8.10.zh-CN.md) installation
+[English](operations.md) or [Chinese](operations.zh-CN.md) deployment
 guide for the EL8 layout route. Other Linux x86_64 hosts can use the same
 executable when they meet this contract; this is not an all-kernel or
 all-architecture support claim.
@@ -39,7 +39,9 @@ ABI adapter and corresponding backend argument mapping.
 | NFSD profiles, layout and BPF permissions | Required | Same requirements |
 
 The native collector uses kprobes and hash/per-CPU maps, without ring-buffer or
-fentry requirements. Selecting bpftrace does not bypass the shared layout or
+fentry requirements. Latency uses `bpf_ktime_get_ns`, shared atomic counter
+additions and small per-CPU maxima; it does not add BPF spin-lock or
+compare-exchange requirements. Selecting bpftrace does not bypass the shared layout or
 function-profile requirements. Backend failures are reported, with no automatic
 fallback. The [README comparison](../README.md#choose-a-backend) explains which
 backend to choose and their operational tradeoffs.
@@ -126,10 +128,29 @@ identical link-local addresses exist on multiple interfaces.
 
 ## Collection limits
 
+Both backends always collect detailed records and independent endpoint-pair
+summaries, including the real transport value. The CLI applies runtime view and
+transport filters in the frontend. Changing a view does not expand the kernel's
+supported function semantics or recover data already lost to map limits.
+
 Both backends use bounded maps and return probes. Native client/server totals
-have a map separate from detailed file/UID/GID data, with additional map/read
-health counters. bpftrace follows its configured per-map key limit and reports
-its own launch/runtime diagnostics. Neither can reconstruct undelivered events.
+have a map separate from detailed file/UID/GID data. Its latency/error map allows
+8,192 directional endpoint/transport keys and reports capacity losses through
+`diagnostic_drops`; the maximum map has the same bound. bpftrace follows its
+configured per-map key limit and reports its own launch/runtime diagnostics.
+Histograms can consume several bucket keys per endpoint in bpftrace. A histogram
+that disagrees with the completed-call count, or lacks a usable maximum, does
+not produce valid P95/P99 output; the snapshot reports the incomplete data.
+This can also occur transiently while either backend reads live maps. Native
+memory-read diagnostics are more complete: bpftrace cannot reliably distinguish
+every kernel read failure from a zero result. Neither backend can reconstruct
+undelivered events.
+
+Latency and returned NFS error counts cover only the three supported READ/WRITE
+VFS helper paths. They do not measure metadata operations, client RPC/network
+latency or storage durability. P95/P99 are approximate cumulative histogram
+quantiles. A matching layout and successful build are insufficient to validate
+these measurements; confirm attachment and workload counts on the target kernel.
 See [architecture](architecture.md) for map limits, snapshot timing and diagnostics.
 
 Primary references:

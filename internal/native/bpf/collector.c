@@ -13,7 +13,7 @@ struct pt_regs {
 };
 struct key_t {
     __u64 ino;
-    __u32 uid,gid,dev,family;
+    __u32 uid,gid,dev,family,transport,pad;
     __u8 client[16],server[16];
 };
 struct val_t { __u64 r_bytes,w_bytes,r_ops,w_ops; };
@@ -26,9 +26,11 @@ struct config_t {
     __u32 file_inode,file_dentry,inode_ino,inode_sb,sb_dev,dentry_parent,dentry_name;
     struct hook_t hooks[3];
 };
-struct health_t { __u64 bad_reads,file_full,client_full,inflight_full,overwritten,failed_ops,name_drops; };
+struct health_t { __u64 bad_reads,file_full,client_full,inflight_full,overwritten,failed_ops,name_drops,diagnostic_drops; };
 struct flight_key { __u64 tid; __u32 slot,pad; };
-struct flight_t { struct key_t key; __u64 count,file; __u32 write,count_bytes; };
+struct flight_t { struct key_t key; __u64 count,file,started; __u32 write,count_bytes,detail,pad; };
+struct diagnostic_key { __u32 family,transport,write,pad; __u8 client[16],server[16]; };
+struct diagnostic_t { __u64 calls,errors,total_ns,buckets[32]; };
 
 struct {
     __uint(type,BPF_MAP_TYPE_PERCPU_HASH);
@@ -58,6 +60,24 @@ struct {
     __uint(type,BPF_MAP_TYPE_HASH); __uint(max_entries,16384);
     __type(key,struct name_key); __type(value,struct name_t);
 } names SEC(".maps");
+/* Histogram counters use shared atomic additions: a 32-bucket value per CPU
+ * would consume excessive memory on large servers. Only maxima are per-CPU,
+ * avoiding spin locks/cmpxchg helpers unsupported by the EL8 baseline. */
+struct {
+    __uint(type,BPF_MAP_TYPE_HASH); __uint(max_entries,8192);
+    __uint(map_flags,BPF_F_NO_PREALLOC);
+    __type(key,struct diagnostic_key); __type(value,struct diagnostic_t);
+} diagnostics SEC(".maps");
+struct {
+    __uint(type,BPF_MAP_TYPE_PERCPU_HASH); __uint(max_entries,8192);
+    __uint(map_flags,BPF_F_NO_PREALLOC);
+    __type(key,struct diagnostic_key); __type(value,__u64);
+} diagnostic_max SEC(".maps");
+/* A read-only zero seed avoids a 280-byte temporary on the BPF stack. */
+struct {
+    __uint(type,BPF_MAP_TYPE_ARRAY); __uint(max_entries,1);
+    __type(key,__u32); __type(value,struct diagnostic_t);
+} diagnostic_zero SEC(".maps");
 
 static __always_inline struct health_t *healthp(void) {
     __u32 z=0;return bpf_map_lookup_elem(&health,&z);
@@ -95,12 +115,14 @@ static __always_inline int start(struct pt_regs *ctx,__u32 slot,__u32 write) {
     __u32 proto=0,vers=0; __u16 family=0,server_family=0;
     __u64 inode=0,sb=0;
     struct flight_t op={};
+    op.started=bpf_ktime_get_ns();
     struct flight_key fk={.tid=bpf_get_current_pid_tgid(),.slot=slot};
-    if (!rq || !file || !cnt) return 0;
+    if (!rq) return 0;
     if (GET(proto,rq,c->rq_prot) || GET(vers,rq,c->rq_vers)) goto bad;
     if ((c->transport && proto!=c->transport) || (vers!=3 && vers!=4)) return 0;
     if (GET(family,rq,c->rq_addr) || GET(server_family,rq,c->rq_daddr)) goto bad;
     op.key.family=family;
+    op.key.transport=proto;
     if (family==2) {
         if (bpf_probe_read(op.key.client,4,(void *)(rq+c->rq_addr+4))) goto bad;
         if (server_family!=2 || bpf_probe_read(op.key.server,4,(void *)(rq+c->rq_daddr+4))) goto bad;
@@ -108,14 +130,20 @@ static __always_inline int start(struct pt_regs *ctx,__u32 slot,__u32 write) {
         if (bpf_probe_read(op.key.client,16,(void *)(rq+c->rq_addr+8))) goto bad;
         if (server_family!=10 || bpf_probe_read(op.key.server,16,(void *)(rq+c->rq_daddr+8))) goto bad;
     } else return 0;
-    if (hk->file_wrapper!=0xffffffff && GET(file,file,hk->file_wrapper)) goto bad;
+    op.count=cnt;op.write=write;op.count_bytes=hk->count_bytes;
+    if (!file) goto detail_bad;
+    if (hk->file_wrapper!=0xffffffff && GET(file,file,hk->file_wrapper)) goto detail_bad;
     if (GET(op.key.uid,rq,c->rq_uid) || GET(op.key.gid,rq,c->rq_gid) ||
         GET(inode,file,c->file_inode) || !inode || GET(op.key.ino,inode,c->inode_ino) ||
-        GET(sb,inode,c->inode_sb) || !sb || GET(op.key.dev,sb,c->sb_dev)) goto bad;
-    op.count=cnt;op.file=file;op.write=write;op.count_bytes=hk->count_bytes;
+        GET(sb,inode,c->inode_sb) || !sb || GET(op.key.dev,sb,c->sb_dev)) goto detail_bad;
+    op.file=file;op.detail=1;
+    goto save;
+detail_bad:
+    if (h) h->bad_reads++;
+save:
     if (bpf_map_lookup_elem(&inflight,&fk) && h) h->overwritten++;
     if (bpf_map_update_elem(&inflight,&fk,&op,BPF_ANY) && h) h->inflight_full++;
-    hint(file,&op.key,c,h);
+    if (op.detail) hint(file,&op.key,c,h);
     return 0;
 bad: if (h) h->bad_reads++;return 0;
 }
@@ -125,6 +153,39 @@ static __always_inline void add(void *map,struct key_t *key,__u64 bytes,__u32 wr
     if (!v) {if (h) {if (client) h->client_full++;else h->file_full++;}return;}
     if (write) {v->w_bytes+=bytes;v->w_ops++;}else {v->r_bytes+=bytes;v->r_ops++;}
 }
+static __always_inline void latency(struct flight_t *op,__u64 elapsed,__u32 failed,struct health_t *h) {
+    struct diagnostic_key dk={.family=op->key.family,.transport=op->key.transport,.write=op->write};
+    __builtin_memcpy(dk.client,op->key.client,16);
+    __builtin_memcpy(dk.server,op->key.server,16);
+    struct diagnostic_t *d=bpf_map_lookup_elem(&diagnostics,&dk);
+    if (!d) {
+        __u32 z=0;struct diagnostic_t *zero=bpf_map_lookup_elem(&diagnostic_zero,&z);
+        if (zero) bpf_map_update_elem(&diagnostics,&dk,zero,BPF_NOEXIST);
+        d=bpf_map_lookup_elem(&diagnostics,&dk);
+    }
+    if (!d) {if (h) h->diagnostic_drops++;return;}
+    __sync_fetch_and_add(&d->calls,1);
+    if (failed) __sync_fetch_and_add(&d->errors,1);
+    __sync_fetch_and_add(&d->total_ns,elapsed);
+    __u64 us=elapsed/1000+(elapsed%1000!=0),v=us ? us-1 : 0;
+    __u32 bucket=0;
+    if (v>=(1ULL<<32)) {v>>=32;bucket+=32;}
+    if (v>=(1ULL<<16)) {v>>=16;bucket+=16;}
+    if (v>=(1ULL<<8)) {v>>=8;bucket+=8;}
+    if (v>=(1ULL<<4)) {v>>=4;bucket+=4;}
+    if (v>=(1ULL<<2)) {v>>=2;bucket+=2;}
+    if (v>=(1ULL<<1)) {v>>=1;bucket+=1;}
+    if (v) bucket++;
+    if (bucket>31) bucket=31;
+    __sync_fetch_and_add(&d->buckets[bucket],1);
+    __u64 *peak=bpf_map_lookup_elem(&diagnostic_max,&dk);
+    if (!peak) {
+        bpf_map_update_elem(&diagnostic_max,&dk,&elapsed,BPF_NOEXIST);
+        peak=bpf_map_lookup_elem(&diagnostic_max,&dk);
+    }
+    if (peak) {if (elapsed>*peak) *peak=elapsed;}
+    else if (h) h->diagnostic_drops++;
+}
 static __always_inline int finish(struct pt_regs *ctx,__u32 slot) {
     struct flight_key fk={.tid=bpf_get_current_pid_tgid(),.slot=slot};
     struct flight_t *p=bpf_map_lookup_elem(&inflight,&fk);
@@ -132,12 +193,14 @@ static __always_inline int finish(struct pt_regs *ctx,__u32 slot) {
     if (!p) return 0;
     struct flight_t op=*p;
     bpf_map_delete_elem(&inflight,&fk);
+    latency(&op,bpf_ktime_get_ns()-op.started,(__u32)ctx->ax!=0,h);
     if ((__u32)ctx->ax!=0) {if (h) h->failed_ops++;return 0;}
+    if (!op.count) goto bad;
     __u64 bytes=0;
     if (op.count_bytes==4) {
         __u32 n=0;if (bpf_probe_read(&n,4,(void *)op.count)) goto bad;bytes=n;
     } else if (bpf_probe_read(&bytes,8,(void *)op.count)) goto bad;
-    add(&counts,&op.key,bytes,op.write,h,0);
+    if (op.detail) add(&counts,&op.key,bytes,op.write,h,0);
     op.key.ino=0;op.key.uid=0;op.key.gid=0;op.key.dev=0;
     add(&clients,&op.key,bytes,op.write,h,1);
     return 0;

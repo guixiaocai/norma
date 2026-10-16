@@ -141,10 +141,21 @@ func runDoctor(o Options, out io.Writer, host doctorHost) error {
 			check("INFO", "Kernel headers", "matching kernel-devel is missing or mismatched")
 		}
 		fmt.Fprintln(out, "  sudo dnf install gcc make \"kernel-devel-$(uname -r)\"")
-		fmt.Fprintln(out, "  sudo /usr/local/share/norma/tools/prepare-layout.sh")
+		binary, err := os.Executable()
+		if err != nil {
+			binary = "/usr/local/bin/norma"
+		}
+		helper := filepath.Join(filepath.Dir(filepath.Dir(binary)), "share/norma/tools/prepare-layout.sh")
+		if _, statErr := os.Stat(helper); statErr != nil {
+			sourceHelper := filepath.Join(filepath.Dir(filepath.Dir(binary)), "tools/prepare-layout.sh")
+			if _, sourceErr := os.Stat(sourceHelper); sourceErr == nil {
+				helper = sourceHelper
+			}
+		}
+		fmt.Fprintf(out, "  sudo env NORMA_BIN=%s %s\n", shellQuote(binary), shellQuote(helper))
 		fmt.Fprintln(out, "  sudo norma --doctor")
-		fmt.Fprintln(out, "  For a custom prefix, use <prefix>/share/norma/tools/prepare-layout.sh.")
-		fmt.Fprintln(out, "  Headers must match the running kernel exactly; see docs/rocky-linux-8.10.md if the package is unavailable.")
+		fmt.Fprintln(out, "  Use the helper installed alongside your binary (RPM: /usr/share/norma; tar default: /usr/local/share/norma).")
+		fmt.Fprintln(out, "  Headers must match the running kernel exactly; see docs/operations.md if the package is unavailable.")
 	}
 	fmt.Fprintln(out, "\nThis check does not load or attach probes, test BPF permissions, or validate workload counts.")
 	if failures > 0 {
@@ -154,6 +165,8 @@ func runDoctor(o Options, out io.Writer, host doctorHost) error {
 	fmt.Fprintln(out, "Prerequisite checks passed. Next: sudo norma (or retain your --layout / --backend options).")
 	return nil
 }
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 
 func supportedBpftrace(version string) bool {
 	m := regexp.MustCompile(`\bbpftrace\s+v?(\d+)\.(\d+)(?:\.|\b)`).FindStringSubmatch(version)

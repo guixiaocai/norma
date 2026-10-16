@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-var Version = "v0.4.0"
+var Version = "v0.5.0"
 var Commit = "source"
 
 type Options struct {
@@ -23,6 +23,8 @@ type Options struct {
 	Demo, Doctor, NoColor                              bool
 	Limit                                              int
 	Filter                                             string
+	FileFilter, Config                                 string
+	Nodes                                              map[string]Node
 	Local                                              map[netip.Addr]bool
 	Client                                             *netip.Prefix
 }
@@ -49,7 +51,9 @@ func Parse(name string, args []string, out io.Writer) (Options, error) {
 	fs.DurationVar(&o.Interval, "r", time.Second, "refresh/sample interval, for example 1s")
 	seconds := fs.Float64("s", 0, "exit after this number of seconds (0: unlimited)")
 	fs.StringVar(&o.Filter, "F", "", "client IP or CIDR network")
-	fs.StringVar(&o.Group, "g", "clients", "clients, servers, users, groups, files")
+	fs.StringVar(&o.FileFilter, "file-filter", "", "case-insensitive filename hint substring (not an absolute path)")
+	fs.StringVar(&o.Config, "config", os.Getenv("NORMA_CONFIG"), "node naming/group configuration JSON")
+	fs.StringVar(&o.Group, "g", "clients", "clients, servers, users, groups, files, transports, nodegroups")
 	fs.StringVar(&o.Sort, "sort", "now", "now, 1m, window, peak, total, name")
 	fs.IntVar(&o.Limit, "l", 20, "maximum entities in text output (0: all)")
 	fs.StringVar(&o.Layout, "layout", "", "advanced: kernel layout JSON file")
@@ -60,7 +64,7 @@ func Parse(name string, args []string, out io.Writer) (Options, error) {
 	fs.Usage = func() {
 		fmt.Fprintf(out, "%s %s — NFS server I/O by client\n\nUsage: %s [options]\n\n", name, Version, name)
 		fs.PrintDefaults()
-		fmt.Fprintln(out, "\nExamples:\n  "+name+" --demo\n  sudo "+name+" --doctor\n  sudo "+name+"\n  sudo "+name+" --backend bpftrace\n  sudo "+name+" -p rdma\n  sudo "+name+" -i eno2 -w 10m\n  sudo "+name+" -t -s 120\n\nKeys: q/Ctrl+C quit | B bytes/bits | o ops | s sort | t read/write/both/total | p pause display | ↑/↓ scroll\nREAD = client reads from server; WRITE = client writes to server. -i filters the interface's local IPs, not packet ingress.")
+		fmt.Fprintln(out, "\nExamples:\n  "+name+" --demo\n  sudo "+name+" --doctor\n  sudo "+name+"\n  sudo "+name+" --config /path/to/nodes.json\n  sudo "+name+" -g transports\n  sudo "+name+" -g files --file-filter dataset\n  sudo "+name+" --backend bpftrace\n  sudo "+name+" -p rdma\n  sudo "+name+" -i eno2 -w 10m\n  sudo "+name+" -t -s 120\n\nKeys: q/Ctrl+C quit | B units | o ops | s sort | t direction | T transport | g group | / filter\n      ↑/↓ select | Enter drill down | u files/UID | d diagnostics | Esc back | p pause\nREAD = client reads from server; WRITE = client writes to server. -i filters the interface's local IPs, not packet ingress.")
 	}
 	// Retain positional launch shortcuts without making users choose a view.
 	if len(args) > 0 && (args[0] == "clients" || args[0] == "tui" || args[0] == "simple") {
@@ -117,7 +121,7 @@ func Parse(name string, args []string, out io.Writer) (Options, error) {
 		return o, fmt.Errorf("-p must be rdma, tcp, udp or all")
 	}
 	switch o.Group {
-	case "clients", "servers", "users", "groups", "files":
+	case "clients", "servers", "users", "groups", "files", "transports", "nodegroups":
 	default:
 		return o, fmt.Errorf("unknown group %q", o.Group)
 	}
@@ -179,6 +183,13 @@ func Parse(name string, args []string, out io.Writer) (Options, error) {
 		if len(o.Local) == 0 {
 			return o, fmt.Errorf("interface %s has no IP addresses", o.Interface)
 		}
+	}
+	if o.Config != "" {
+		nodes, err := LoadNodes(o.Config)
+		if err != nil {
+			return o, fmt.Errorf("node configuration: %w", err)
+		}
+		o.Nodes = nodes
 	}
 	return o, nil
 }

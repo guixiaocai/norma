@@ -12,8 +12,8 @@ import (
 func main() {
 	app.Main("norma", func(l layout.Layout, o app.Options) (collect.Source, error) {
 		if o.Backend == "bpftrace" {
-			return trace.Open(l, o.Protocol(), o.Group, o.Interval)
+			return trace.Open(l, 0, o.Group, o.Interval)
 		}
-		return native.Open(l, o.Protocol(), o.Group)
+		return native.Open(l, 0, o.Group)
 	})
 }

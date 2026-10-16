@@ -1,0 +1,7 @@
+{
+  "nodes": {
+    "192.0.2.21": { "name": "compute01", "group": "compute" },
+    "192.0.2.22": { "name": "compute02", "group": "compute" },
+    "192.0.2.23": { "name": "login01", "group": "login" }
+  }
+}

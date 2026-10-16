@@ -14,6 +14,12 @@
 
 ## 项目亮点
 
+- **RPM 与完整安装管理。** 优先提供 Rocky/Alma/RHEL RPM，便于批量安装、
+  查询版本、升级、降级和卸载；tar 安装提供文件清单、完整快照、回滚与保留数据卸载。
+- **连续下钻排查。** 选中客户端按 Enter 查看文件/UID，运行中切换分组、IP/CIDR
+  与文件名提示筛选，保留会话统计；同屏区分 RDMA/TCP，节点别名保留原 IP。
+- **耗时与错误定位到客户端。** 提供读写 VFS helper 会话均值、P95/P99 直方图
+  上界、最大值和失败数，以及平均操作大小、负载占比及主机 CPU/磁盘/网卡关联信息。
 - **分区清晰的终端仪表盘。** 读写概览、会话统计、可滚动明细、采集健康状态
   和快捷键分开显示，减少拥挤；终端变窄时自动精简列，支持关闭颜色。
 - **按客户端定位共享存储 I/O。** 查看完成的读写数据量，包括服务端缓存命中
@@ -30,8 +36,18 @@
 
 ## 安装与运行
 
-在 **Linux x86_64 NFS 服务端** 下载并运行安装脚本。脚本自动选取 GitHub
-最新稳定版，并在解压前校验发布包的 SHA256：
+**Rocky/Alma/RHEL x86_64 NFS 服务端优先安装 RPM：**
+
+```bash
+curl -fLO https://github.com/guixiaocai/norma/releases/download/v0.5.0/norma-0.5.0-1.el8.x86_64.rpm
+curl -fLO https://github.com/guixiaocai/norma/releases/download/v0.5.0/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+sudo dnf install ./norma-0.5.0-1.el8.x86_64.rpm
+sudo norma --doctor
+sudo norma
+```
+
+也可在 Linux x86_64 使用 tar 安装脚本，自动选取最新稳定版并校验 SHA256：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/guixiaocai/norma/main/install.sh -o install-norma.sh
@@ -41,19 +57,21 @@ sudo norma --doctor                # 只读检查部署条件
 sudo norma                         # 原生 eBPF、全部 NFS 传输、客户端视图
 ```
 
-**Rocky Linux 8.10 是本版本的主要部署目标。** 常见的 EL8 布局准备步骤、离线
-安装及排错请看 [Rocky Linux 8.10 安装指南](docs/rocky-linux-8.10.zh-CN.md)。
+**Rocky Linux 8.10 是本版本的主要部署目标。** EL8 布局准备、离线安装、RPM/tar
+升级回滚卸载、节点配置和排错统一见 [部署管理与在线排查](docs/operations.zh-CN.md)。
 安装脚本负责安装文件，不自动安装系统包、调整内核或更改 NFS 服务。
 `--doctor` 不加载 BPF，不启动采集；检查通过不等于已经完成探针挂接验证。
 
 固定版本、安装到个人目录或离线安装：
 
 ```bash
-sudo bash install-norma.sh --version v0.4.0
+sudo bash install-norma.sh --version v0.5.0
 bash install-norma.sh --prefix "$HOME/.local"
 export PATH="$HOME/.local/bin:$PATH"
 # 离线：校验并解压 Release，进入解压后的目录，再执行：
 sudo ./tools/install.sh
+# 从没有安装清单的 v0.4 tar 安装迁移，首次加：
+sudo ./tools/install.sh --adopt-legacy
 ```
 
 安装到个人目录无需 root；**实际采集仍需要 BPF/探针权限**。`norma --demo`
@@ -111,6 +129,9 @@ bpftrace 后端。某后端失败后，先查看错误，再显式尝试另一�
 | `sudo norma -w 10m -b` | 1 分钟与 10 分钟平均、10 分钟峰值，以 bit/s 显示 |
 | `sudo norma -F 40.0.0.0/16` | 按客户端网段筛选，也接受单个 IP |
 | `sudo norma -g files` | 按文件的设备号和 inode 查看 |
+| `sudo norma -g transports` | 按真实 RDMA/TCP/UDP 分项查看 |
+| `sudo norma --config examples/nodes.json -g nodegroups` | 按配置的计算/登录等节点角色汇总 |
+| `sudo norma -g files --file-filter dataset` | 按文件名提示片段筛选 |
 | `sudo norma -g users` | 按 UID 查看；`groups` 按 GID，`servers` 按服务端地址 |
 | `sudo norma --backend bpftrace -g users -p tcp` | bpftrace 后端按 UID 查看 TCP NFS |
 | `sudo norma -t -s 120` | 文本输出，120 秒后退出 |
@@ -128,8 +149,44 @@ IPoIB 传输，仍应选 TCP。
 
 ![norma 终端仪表盘，使用合成演示数据](docs/images/dashboard.png)
 
-*由真实终端界面渲染的合成数据演示图，仅用于展示布局，不是生产 NFS 服务端的
-实测数据。*
+*本节所有截图均由真实终端渲染器使用合成演示数据生成，用于展示界面，不是生产
+NFS 服务端的实测数据。点击各项可展开完整截图。*
+
+<details>
+<summary>客户端文件明细 — Enter</summary>
+
+![所选客户端的文件明细，使用合成演示数据](docs/images/dashboard-files.png)
+
+选中客户端后按 Enter 查看其文件统计，Esc 返回客户端列表。
+
+</details>
+
+<details>
+<summary>所选客户端的 UID 明细 — u</summary>
+
+![所选客户端的 UID 明细，使用合成演示数据](docs/images/dashboard-users.png)
+
+在客户端明细中按 `u` 切换文件与 UID 视图，Esc 返回。
+
+</details>
+
+<details>
+<summary>不同传输方式对比 — g / T</summary>
+
+![传输方式对比，使用合成演示数据](docs/images/dashboard-transports.png)
+
+按 `g` 切到传输分组，`T` 选择传输视图，Enter 展开所选传输的客户端。
+
+</details>
+
+<details>
+<summary>80 × 24 小终端诊断页 — d</summary>
+
+![小终端所选实体诊断页，使用合成演示数据](docs/images/dashboard-diagnostics.png)
+
+小终端中按 `d` 查看所选实体诊断，`d` 或 Esc 返回。
+
+</details>
 
 界面分为运行信息、读写概览、会话累计、客户端明细、采集健康状态及快捷键区域。
 窄终端会自动精简列；至少 120 列宽度可同时查看完整滚动统计。`--no-color` 或
@@ -156,6 +213,14 @@ WRITE 表示客户端写入服务端。
 输入模式。`-t` 或重定向时输出无终端转义序列的普通文本，`-N` 异步查询名称，
 默认显示数字地址。
 
+新增交互：上下键选择客户端，Enter 进入文件明细，`u` 在文件/UID 间切换，
+Esc 返回；`g` 切换分组，`/` 输入 IP/CIDR 或 `file=名称片段` 并按 Enter，
+`T` 切换 all/TCP/RDMA/UDP。选择传输行后 Enter 可展开其客户端。
+小终端可按 `d` 打开所选实体诊断页，查看耗时和失败数。
+排序跟随当前字节/操作数指标及读写方向；选中实体面板显示平均操作大小、当前占比、
+首次观察时间和会话 helper 诊断。P95/P99 是直方图上界，耗时包含失败调用，
+统计边界见 [排查指南](docs/operations.zh-CN.md#正确解读耗时错误及主机概览)。
+
 统计的是 NFSD 服务端成功完成的逻辑读写字节，包含服务端缓存命中的读取，
 不包含 RPC/RDMA 协议头、线上重传或物理磁盘 I/O，也不保证客户端已收到
 回复或数据已持久化。本机作为客户端访问其他 NFS 服务端的 I/O 不在范围内。
@@ -168,7 +233,8 @@ BPF 源码时无需安装 clang：
 ```bash
 make build
 ./bin/norma --version
-make release VERSION=v0.4.0        # 打包还需 tar、zip
+make release VERSION=v0.5.0        # tar/zip
+make rpm VERSION=v0.5.0            # 另需 rpmbuild
 ```
 
 `make`/`make build` 只生成 **`bin/norma`**，一个静态 Go 可执行文件内包含两种
@@ -184,7 +250,7 @@ make generate
 make build
 ```
 
-推送版本标签后，GitHub Actions 构建并发布 Linux amd64 的 `.tar.gz`、`.zip`
+推送版本标签后，GitHub Actions 构建并发布 Linux amd64 的 RPM、`.tar.gz`、`.zip`
 与 SHA256；发布步骤见 [publishing](docs/publishing.md)。构建和 CLI 检查不等于
 目标内核运行验证，探针挂接、NFS 工作负载计数及跨内核行为需在部署环境验证。
 

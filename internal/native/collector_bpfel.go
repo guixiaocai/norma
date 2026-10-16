@@ -40,6 +40,24 @@ type collectorConfigT struct {
 	}
 }
 
+type collectorDiagnosticKey struct {
+	_         structs.HostLayout
+	Family    uint32
+	Transport uint32
+	Write     uint32
+	Pad       uint32
+	Client    [16]uint8
+	Server    [16]uint8
+}
+
+type collectorDiagnosticT struct {
+	_       structs.HostLayout
+	Calls   uint64
+	Errors  uint64
+	TotalNs uint64
+	Buckets [32]uint64
+}
+
 type collectorFlightKey struct {
 	_    structs.HostLayout
 	Tid  uint64
@@ -52,30 +70,36 @@ type collectorFlightT struct {
 	Key        collectorKeyT
 	Count      uint64
 	File       uint64
+	Started    uint64
 	Write      uint32
 	CountBytes uint32
+	Detail     uint32
+	Pad        uint32
 }
 
 type collectorHealthT struct {
-	_            structs.HostLayout
-	BadReads     uint64
-	FileFull     uint64
-	ClientFull   uint64
-	InflightFull uint64
-	Overwritten  uint64
-	FailedOps    uint64
-	NameDrops    uint64
+	_               structs.HostLayout
+	BadReads        uint64
+	FileFull        uint64
+	ClientFull      uint64
+	InflightFull    uint64
+	Overwritten     uint64
+	FailedOps       uint64
+	NameDrops       uint64
+	DiagnosticDrops uint64
 }
 
 type collectorKeyT struct {
-	_      structs.HostLayout
-	Ino    uint64
-	Uid    uint32
-	Gid    uint32
-	Dev    uint32
-	Family uint32
-	Client [16]uint8
-	Server [16]uint8
+	_         structs.HostLayout
+	Ino       uint64
+	Uid       uint32
+	Gid       uint32
+	Dev       uint32
+	Family    uint32
+	Transport uint32
+	Pad       uint32
+	Client    [16]uint8
+	Server    [16]uint8
 }
 
 type collectorNameKey struct {
@@ -153,12 +177,15 @@ type collectorProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type collectorMapSpecs struct {
-	Clients  *ebpf.MapSpec `ebpf:"clients"`
-	Config   *ebpf.MapSpec `ebpf:"config"`
-	Counts   *ebpf.MapSpec `ebpf:"counts"`
-	Health   *ebpf.MapSpec `ebpf:"health"`
-	Inflight *ebpf.MapSpec `ebpf:"inflight"`
-	Names    *ebpf.MapSpec `ebpf:"names"`
+	Clients        *ebpf.MapSpec `ebpf:"clients"`
+	Config         *ebpf.MapSpec `ebpf:"config"`
+	Counts         *ebpf.MapSpec `ebpf:"counts"`
+	DiagnosticMax  *ebpf.MapSpec `ebpf:"diagnostic_max"`
+	DiagnosticZero *ebpf.MapSpec `ebpf:"diagnostic_zero"`
+	Diagnostics    *ebpf.MapSpec `ebpf:"diagnostics"`
+	Health         *ebpf.MapSpec `ebpf:"health"`
+	Inflight       *ebpf.MapSpec `ebpf:"inflight"`
+	Names          *ebpf.MapSpec `ebpf:"names"`
 }
 
 // collectorVariableSpecs contains global variables before they are loaded into the kernel.
@@ -187,12 +214,15 @@ func (o *collectorObjects) Close() error {
 //
 // It can be passed to loadCollectorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type collectorMaps struct {
-	Clients  *ebpf.Map `ebpf:"clients"`
-	Config   *ebpf.Map `ebpf:"config"`
-	Counts   *ebpf.Map `ebpf:"counts"`
-	Health   *ebpf.Map `ebpf:"health"`
-	Inflight *ebpf.Map `ebpf:"inflight"`
-	Names    *ebpf.Map `ebpf:"names"`
+	Clients        *ebpf.Map `ebpf:"clients"`
+	Config         *ebpf.Map `ebpf:"config"`
+	Counts         *ebpf.Map `ebpf:"counts"`
+	DiagnosticMax  *ebpf.Map `ebpf:"diagnostic_max"`
+	DiagnosticZero *ebpf.Map `ebpf:"diagnostic_zero"`
+	Diagnostics    *ebpf.Map `ebpf:"diagnostics"`
+	Health         *ebpf.Map `ebpf:"health"`
+	Inflight       *ebpf.Map `ebpf:"inflight"`
+	Names          *ebpf.Map `ebpf:"names"`
 }
 
 func (m *collectorMaps) Close() error {
@@ -200,6 +230,9 @@ func (m *collectorMaps) Close() error {
 		m.Clients,
 		m.Config,
 		m.Counts,
+		m.DiagnosticMax,
+		m.DiagnosticZero,
+		m.Diagnostics,
 		m.Health,
 		m.Inflight,
 		m.Names,

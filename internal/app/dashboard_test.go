@@ -3,6 +3,7 @@ package app
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -136,8 +137,8 @@ func TestDashboardScrollingUsesVisiblePage(t *testing.T) {
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = updated.(model)
-	if m.offset != last-1 {
-		t.Fatal("scrolling up remained stuck beyond the last visible page")
+	if m.cursor != len(m.history.Entities)-2 {
+		t.Fatal("selection remained stuck beyond the last visible row")
 	}
 }
 
@@ -172,18 +173,289 @@ func TestDashboardCombinedPeakIsSimultaneous(t *testing.T) {
 	}
 }
 
-// Produce documentation assets from the same View used by the running TUI.
-// Example: NORMA_SCREENSHOT=/tmp/norma.ansi go test ./internal/app -run TestDashboardScreenshot
+// screenshotDetailFixture changes synthetic workload inputs only: each sampled
+// client's successful deltas are distributed across three files and UIDs. The
+// real History still computes every displayed rate, total and grouping, while
+// the independent client summaries and latency diagnostics remain unchanged.
+func screenshotDetailFixture() model {
+	m := dashboardFixture()
+	source := newDemoSource()
+	source.start, source.last = m.history.Start, m.history.Start
+	m.history = NewHistory(source.start, m.opts.Window)
+	m.src = source
+	previous := make([]collect.Counters, len(source.records))
+	cumulative := make([][3]collect.Counters, len(source.records))
+	share := func(value uint64, first, second uint64) [3]uint64 {
+		// Divide each nonnegative sample delta, then accumulate the shares.
+		// Dividing cumulative values and putting rounding in the final file can
+		// make that file's counter decrease at rounding boundaries.
+		a := value/10*first + value%10*first/10
+		b := value/10*second + value%10*second/10
+		return [3]uint64{a, b, value - a - b}
+	}
+	for sample := 1; sample <= 120; sample++ {
+		snapshot := source.sample(source.start.Add(time.Duration(sample) * time.Second))
+		original := snapshot.Records
+		snapshot.Records = make([]collect.Record, 0, len(original)*3)
+		for i, record := range original {
+			delta := record.Counters.Delta(previous[i])
+			previous[i] = record.Counters
+			reads, writes := share(delta.Read, 6, 3), share(delta.Write, 1, 6)
+			readOps, writeOps := share(delta.ReadOps, 6, 3), share(delta.WriteOps, 1, 6)
+			names := []string{fmt.Sprintf("datasets/batch-%02d.bin", i+1), fmt.Sprintf("results/summary-%02d.dat", i+1), fmt.Sprintf("checkpoints/task-%02d.ckpt", i+1)}
+			for part := 0; part < 3; part++ {
+				detail := record
+				detail.Inode = record.Inode*3 + uint64(part)
+				detail.UID = uint32(1000 + part)
+				detail.Name = names[part]
+				cumulative[i][part] = cumulative[i][part].Add(collect.Counters{Read: reads[part], Write: writes[part], ReadOps: readOps[part], WriteOps: writeOps[part]})
+				detail.Counters = cumulative[i][part]
+				snapshot.Records = append(snapshot.Records, detail)
+			}
+		}
+		m.history.Add(snapshot, m.opts)
+	}
+	return m
+}
+
+func screenshotModel(view string) (model, error) {
+	if view == "" {
+		view = "overview"
+	}
+	var m model
+	switch view {
+	case "overview", "transports", "diagnostics":
+		m = dashboardFixture()
+	case "files", "users":
+		m = screenshotDetailFixture()
+	default:
+		return model{}, fmt.Errorf("unknown NORMA_SCREENSHOT_VIEW %q; choose overview, files, users, transports or diagnostics", view)
+	}
+	switch view {
+	case "files", "users":
+		m = keyUpdate(m, "enter")
+		if view == "users" {
+			m = keyUpdate(m, "u")
+		}
+	case "transports":
+		for step := 0; step < 7 && m.opts.Group != "transports"; step++ {
+			m = keyUpdate(m, "g")
+		}
+	case "diagnostics":
+		// The third ranked demo client has synthetic failures, so this view
+		// demonstrates error counts as well as successful helper timings.
+		m = keyUpdate(m, "down")
+		m = keyUpdate(m, "down")
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = keyUpdate(updated.(model), "d")
+	}
+	return m, nil
+}
+
+// Produce documentation assets from the same View/Update used by the running
+// TUI. NORMA_SCREENSHOT_VIEW defaults to overview; other supported views are
+// files, users, transports and diagnostics. Every dataset is explicitly DEMO.
+// Example:
+// NORMA_SCREENSHOT=/tmp/files.ansi NORMA_SCREENSHOT_VIEW=files go test ./internal/app -run '^TestDashboardScreenshot$' -count=1
 func TestDashboardScreenshot(t *testing.T) {
 	path := os.Getenv("NORMA_SCREENSHOT")
 	if path == "" {
 		t.Skip("set NORMA_SCREENSHOT to export the actual demo dashboard frame")
 	}
 	t.Setenv("NO_COLOR", "")
-	m := dashboardFixture()
+	m, err := screenshotModel(os.Getenv("NORMA_SCREENSHOT_VIEW"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	frame := m.View()
 	assertFrameFits(t, frame, m.width, m.height)
+	if !strings.Contains(ansi.Strip(frame), "DEMO") {
+		t.Fatal("synthetic screenshot lost its DEMO label")
+	}
 	if err := os.WriteFile(path, []byte(frame), 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDashboardScreenshotVariants(t *testing.T) {
+	for _, tc := range []struct {
+		view, group string
+		entities    int
+	}{
+		{"overview", "clients", 8}, {"files", "files", 3}, {"users", "users", 3}, {"transports", "transports", 3}, {"diagnostics", "clients", 8},
+	} {
+		t.Run(tc.view, func(t *testing.T) {
+			m, err := screenshotModel(tc.view)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.opts.Group != tc.group || len(m.history.Entities) != tc.entities {
+				t.Fatalf("wrong screenshot population: group=%s entities=%d", m.opts.Group, len(m.history.Entities))
+			}
+			frame := m.View()
+			assertFrameFits(t, frame, m.width, m.height)
+			if !strings.Contains(ansi.Strip(frame), "DEMO") {
+				t.Fatal("synthetic screenshot is not labelled")
+			}
+			if tc.view == "files" || tc.view == "users" {
+				if len(m.navigation) != 1 || m.detailClient == "" || m.opts.Client == nil {
+					t.Fatal("screenshot bypassed client drill-down")
+				}
+			}
+			if tc.view == "diagnostics" && (!m.diagnosticsView || m.width != 80 || m.height != 24 || m.selectedEntity().Diagnostics.Read.Errors == 0) {
+				t.Fatal("diagnostics screenshot lacks selected synthetic failures or compact statistics view")
+			}
+		})
+	}
+	if _, err := screenshotModel("unknown"); err == nil {
+		t.Fatal("unsupported screenshot view was accepted")
+	}
+}
+
+func TestScreenshotDetailFixtureConservesClientCounters(t *testing.T) {
+	m := screenshotDetailFixture()
+	for key, client := range m.history.Entities {
+		address := netip.MustParseAddr(key)
+		prefix := netip.PrefixFrom(address, address.BitLen())
+		opts := m.opts
+		opts.Group, opts.Client = "files", &prefix
+		files := m.history.Project(opts)
+		if len(files.Entities) != 3 || files.Total.Total != client.Total || files.Total.Now != client.Now {
+			t.Fatalf("detail fixture changed endpoint accounting for %s", key)
+		}
+		if !files.Total.Average1Valid || !files.Total.AverageWValid || !files.Total.PeakWValid {
+			t.Fatal("synthetic detail history unexpectedly unavailable")
+		}
+		opts.Group = "users"
+		users := m.history.Project(opts)
+		if len(users.Entities) != 3 || users.Total.Total != client.Total {
+			t.Fatalf("detail fixture lost UID attribution for %s", key)
+		}
+	}
+	baseline := dashboardFixture()
+	if m.history.Total.Total != baseline.history.Total.Total || m.history.Total.Now != baseline.history.Total.Now {
+		t.Fatal("screenshot fixture changed overview counters")
+	}
+}
+
+func keyUpdate(m model, key string) model {
+	var event tea.KeyMsg
+	switch key {
+	case "enter":
+		event = tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		event = tea.KeyMsg{Type: tea.KeyEsc}
+	case "down":
+		event = tea.KeyMsg{Type: tea.KeyDown}
+	default:
+		event = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
+	}
+	updated, _ := m.Update(event)
+	return updated.(model)
+}
+func TestDashboardRuntimeFilterAndGrouping(t *testing.T) {
+	m := dashboardFixture()
+	total := m.history.Total.Total
+	m = keyUpdate(m, "/")
+	m = keyUpdate(m, "file=dataset-01")
+	if !m.filtering || !strings.Contains(m.filterInput, "dataset-01") {
+		t.Fatal("filter prompt did not collect text")
+	}
+	m = keyUpdate(m, "enter")
+	if m.filtering || m.opts.FileFilter != "dataset-01" || len(m.history.Entities) != 1 {
+		t.Fatal("filename filter did not update selected population")
+	}
+	m = keyUpdate(m, "g")
+	if m.opts.Group != "files" || len(m.history.Entities) != 1 {
+		t.Fatal("runtime grouping lost filter")
+	}
+	m = keyUpdate(m, "esc")
+	if m.opts.FileFilter != "" || m.history.Total.Total != total {
+		t.Fatal("clearing filter lost previously collected session counters")
+	}
+	m = keyUpdate(m, "/")
+	m = keyUpdate(m, "ip=invalid")
+	m = keyUpdate(m, "enter")
+	if !m.filtering || !strings.Contains(m.filterError, "invalid") {
+		t.Fatal("explicit malformed IP filter was accepted")
+	}
+	m = keyUpdate(m, "esc")
+	if m.filtering {
+		t.Fatal("escape did not cancel filter entry")
+	}
+}
+func TestDashboardDrillDownAndReturnStack(t *testing.T) {
+	m := dashboardFixture()
+	m.opts.Group = "transports"
+	m.reproject()
+	m.syncSelection(false)
+	m = keyUpdate(m, "enter")
+	if m.opts.Group != "clients" || m.opts.Transport == "all" {
+		t.Fatal("transport Enter did not expand its clients")
+	}
+	selected := m.rows()[0].Key
+	session := m.history.Total.Total
+	protocol := m.opts.Transport
+	m = keyUpdate(m, "enter")
+	if m.opts.Group != "files" || m.detailClient != selected || m.opts.Client == nil {
+		t.Fatal("Enter did not select the exact client")
+	}
+	m = keyUpdate(m, "u")
+	if m.opts.Group != "users" {
+		t.Fatal("UID detail toggle missing")
+	}
+	m = keyUpdate(m, "esc")
+	if m.opts.Group != "clients" || m.detailClient != "" || m.history.Total.Total != session || m.opts.Transport != protocol {
+		t.Fatal("return lost parent population or session")
+	}
+	m = keyUpdate(m, "esc")
+	if m.opts.Group != "transports" || m.opts.Transport != "all" {
+		t.Fatal("second return lost original transport grouping")
+	}
+}
+func TestDashboardPausedRegroupUsesFrozenRawHistory(t *testing.T) {
+	m := dashboardFixture()
+	m = keyUpdate(m, "p")
+	frozen := m.frozen.Total.Total.Read
+	snapshot := m.src.(*demoSource).sample(m.history.Last.Add(time.Second))
+	updated, _ := m.Update(tick{snapshot: snapshot})
+	m = updated.(model)
+	m = keyUpdate(m, "g")
+	if m.opts.Group != "files" || m.frozen.Total.Total.Read != frozen || m.history.Total.Total.Read <= frozen {
+		t.Fatal("paused regroup read live retained records")
+	}
+	assertFrameFits(t, m.View(), m.width, m.height)
+}
+func TestDashboardSmallScreenStatisticsView(t *testing.T) {
+	m := dashboardFixture()
+	m.width, m.height = 80, 24
+	m = keyUpdate(m, "d")
+	if !m.diagnosticsView || !strings.Contains(ansi.Strip(m.View()), "SESSION STATISTICS") {
+		t.Fatal("statistics inaccessible on an 80-column terminal")
+	}
+	assertFrameFits(t, m.View(), 80, 24)
+	m = keyUpdate(m, "esc")
+	if m.diagnosticsView {
+		t.Fatal("Escape did not return from statistics")
+	}
+}
+func TestDashboardUnavailableHistoryUsesDash(t *testing.T) {
+	m := dashboardFixture()
+	m.opts.NoColor = true
+	for _, e := range m.history.Entities {
+		e.Average1Valid, e.AverageWValid, e.PeakWValid = false, false, false
+	}
+	m.history.Total.Average1Valid = false
+	frame := m.View()
+	if !strings.Contains(frame, "—") {
+		t.Fatal("unavailable history displayed as a numeric zero")
+	}
+}
+
+func TestCleanTerminalControlsPreservesUnicode(t *testing.T) {
+	input := "文件👩‍🔬\x00\t\n\x1b\x7f\u0085\u009b\u009f"
+	want := "文件👩‍🔬" + strings.Repeat(" ", 8)
+	if got := clean(input); got != want {
+		t.Fatalf("terminal control sanitation: got %q, want %q", got, want)
 	}
 }

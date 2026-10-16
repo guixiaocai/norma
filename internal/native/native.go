@@ -3,6 +3,7 @@ package native
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -16,11 +17,10 @@ import (
 )
 
 type Source struct {
-	objs     collectorObjects
-	links    []link.Link
-	layout   layout.Layout
-	names    map[nameKey]string
-	grouping string
+	objs   collectorObjects
+	links  []link.Link
+	layout layout.Layout
+	names  map[nameKey]string
 }
 type nameKey struct {
 	Ino      uint64
@@ -28,7 +28,7 @@ type nameKey struct {
 }
 
 func Open(l layout.Layout, proto uint32, group string) (_ *Source, err error) {
-	s := &Source{layout: l, names: make(map[nameKey]string), grouping: group}
+	s := &Source{layout: l, names: make(map[nameKey]string)}
 	defer func() {
 		if err != nil {
 			s.Close()
@@ -41,12 +41,9 @@ func Open(l layout.Layout, proto uint32, group string) (_ *Source, err error) {
 		return nil, fmt.Errorf("load BPF: %w", err)
 	}
 	o := l.Offsets
-	cfg := collectorConfigT{Transport: proto,
+	cfg := collectorConfigT{Transport: proto, Names: 1,
 		RqAddr: o.RqAddr, RqDaddr: o.RqDaddr, RqVers: o.RqVers, RqProt: o.RqProt, RqUid: o.RqUID, RqGid: o.RqGID,
 		FileInode: o.FileInode, FileDentry: o.FileDentry, InodeIno: o.InodeIno, InodeSb: o.InodeSB, SbDev: o.SBDev, DentryParent: o.DentryParent, DentryName: o.DentryName}
-	if group == "files" {
-		cfg.Names = 1
-	}
 	for i, h := range l.Hooks {
 		cfg.Hooks[i].RqArg = h.RqArg
 		cfg.Hooks[i].FileArg = h.FileArg
@@ -94,7 +91,7 @@ func (s *Source) Read(ctx context.Context) (collect.Snapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return snap, err
 	}
-	if s.grouping == "files" {
+	{
 		it := s.objs.Names.Iterate()
 		var k nameKey
 		var v collectorNameT
@@ -105,28 +102,49 @@ func (s *Source) Read(ctx context.Context) (collect.Snapshot, error) {
 			return snap, err
 		}
 	}
-	m := s.objs.Counts
-	if s.grouping == "clients" || s.grouping == "servers" {
-		m = s.objs.Clients
+	var err error
+	snap.Records, err = s.readRecords(s.objs.Counts)
+	if err != nil {
+		return snap, fmt.Errorf("detail map: %w", err)
 	}
-	it := m.Iterate()
-	var k collectorKeyT
-	var values []collectorValT
-	for it.Next(&k, &values) {
-		var total collect.Counters
-		for _, v := range values {
-			total = total.Add(collect.Counters{Read: v.R_bytes, Write: v.W_bytes, ReadOps: v.R_ops, WriteOps: v.W_ops})
+	snap.Clients, err = s.readRecords(s.objs.Clients)
+	if err != nil {
+		return snap, fmt.Errorf("client map: %w", err)
+	}
+	dit := s.objs.Diagnostics.Iterate()
+	var dk collectorDiagnosticKey
+	var dv collectorDiagnosticT
+	diagnostics := make(map[collectorDiagnosticKey]*collect.Diagnostic)
+	for dit.Next(&dk, &dv) {
+		var peaks []uint64
+		if err := s.objs.DiagnosticMax.Lookup(dk, &peaks); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return snap, fmt.Errorf("latency maximum map: %w", err)
 		}
-		snap.Records = append(snap.Records, collect.Record{Client: decode(k.Client, k.Family), Server: decode(k.Server, k.Family), UID: k.Uid, GID: k.Gid, Device: k.Dev, Inode: k.Ino, Name: s.names[nameKey{k.Ino, k.Dev, 0}], Counters: total})
+		op := diagnosticOperation(dv, peaks)
+		key := dk
+		key.Write = 0
+		d := diagnostics[key]
+		if d == nil {
+			d = &collect.Diagnostic{Client: decode(dk.Client, dk.Family), Server: decode(dk.Server, dk.Family), Transport: dk.Transport}
+			diagnostics[key] = d
+		}
+		if dk.Write != 0 {
+			d.Write = op
+		} else {
+			d.Read = op
+		}
 	}
-	if err := it.Err(); err != nil {
-		return snap, fmt.Errorf("counter map: %w", err)
+	if err := dit.Err(); err != nil {
+		return snap, fmt.Errorf("latency map: %w", err)
+	}
+	for _, d := range diagnostics {
+		snap.Diagnostics = append(snap.Diagnostics, *d)
 	}
 	var health []collectorHealthT
 	if err := s.objs.Health.Lookup(uint32(0), &health); err != nil {
 		return snap, err
 	}
-	var bad, file, client, flight, overwritten, failed, names uint64
+	var bad, file, client, flight, overwritten, failed, names, diagnostic uint64
 	for _, h := range health {
 		bad += h.BadReads
 		file += h.FileFull
@@ -135,9 +153,41 @@ func (s *Source) Read(ctx context.Context) (collect.Snapshot, error) {
 		overwritten += h.Overwritten
 		failed += h.FailedOps
 		names += h.NameDrops
+		diagnostic += h.DiagnosticDrops
 	}
-	if bad+file+client+flight+overwritten+names+failed > 0 {
-		snap.Health = fmt.Sprintf("read_errors=%d file_drops=%d client_drops=%d inflight_drops=%d missed_or_overwritten=%d failed_ops=%d name_hint_drops=%d", bad, file, client, flight, overwritten, failed, names)
+	if bad+file+client+flight+overwritten+names+failed+diagnostic > 0 {
+		snap.Health = fmt.Sprintf("read_errors=%d file_drops=%d client_drops=%d inflight_drops=%d missed_or_overwritten=%d failed_ops=%d name_hint_drops=%d diagnostic_drops=%d", bad, file, client, flight, overwritten, failed, names, diagnostic)
 	}
+	snap.CheckDiagnosticHealth()
 	return snap, nil
+}
+
+func diagnosticOperation(value collectorDiagnosticT, peaks []uint64) collect.OpDiagnostics {
+	op := collect.OpDiagnostics{Calls: value.Calls, Errors: value.Errors, TotalNS: value.TotalNs, Buckets: value.Buckets}
+	for _, peak := range peaks {
+		op.MaxNS = max(op.MaxNS, peak)
+	}
+	return op
+}
+
+func (s *Source) readRecords(m *ebpf.Map) ([]collect.Record, error) {
+	it := m.Iterate()
+	var k collectorKeyT
+	var values []collectorValT
+	var records []collect.Record
+	for it.Next(&k, &values) {
+		records = append(records, recordFromKey(k, values, s.names[nameKey{k.Ino, k.Dev, 0}]))
+	}
+	if err := it.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func recordFromKey(k collectorKeyT, values []collectorValT, name string) collect.Record {
+	var total collect.Counters
+	for _, v := range values {
+		total = total.Add(collect.Counters{Read: v.R_bytes, Write: v.W_bytes, ReadOps: v.R_ops, WriteOps: v.W_ops})
+	}
+	return collect.Record{Client: decode(k.Client, k.Family), Server: decode(k.Server, k.Family), Transport: k.Transport, UID: k.Uid, GID: k.Gid, Device: k.Dev, Inode: k.Ino, Name: name, Counters: total}
 }
