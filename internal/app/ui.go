@@ -487,13 +487,12 @@ func text(ctx context.Context, m *model) error {
 			}
 			if m.opts.JSON {
 				output := struct {
-					Time time.Time `json:"time"
-	"unicode"`
-					Transport                                     string `json:"transport"`
-					Demo                                          bool   `json:"demo,omitempty"`
-					Group                                         string `json:"group"`
-					ClientFilter                                  string `json:"client_filter,omitempty"`
-					FileFilter                                    string `json:"file_filter,omitempty"`
+					Time                                          time.Time `json:"time"`
+					Transport                                     string    `json:"transport"`
+					Demo                                          bool      `json:"demo,omitempty"`
+					Group                                         string    `json:"group"`
+					ClientFilter                                  string    `json:"client_filter,omitempty"`
+					FileFilter                                    string    `json:"file_filter,omitempty"`
 					WindowSeconds, ObservedSeconds, SampleSeconds float64
 					Rows                                          []*Entity
 					Total                                         *Entity
